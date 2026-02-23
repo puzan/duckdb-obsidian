@@ -21,3 +21,10 @@ query I
 SELECT obsidian_openssl_version('Michael') ILIKE 'Obsidian Michael, my linked OpenSSL version is OpenSSL%';
 ----
 true
+
+# obsidian_notes returns filename and filepath columns
+query II
+SELECT filename, filepath FROM obsidian_notes('test/sql/vault') ORDER BY filename;
+----
+note_a.md	test/sql/vault/note_a.md
+note_b.md	test/sql/vault/subdir/note_b.md
