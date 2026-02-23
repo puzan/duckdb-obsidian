@@ -56,45 +56,63 @@ static string ReadFileContents(FileSystem &fs, const string &path) {
 	return contents;
 }
 
-// Extract title from frontmatter property, or first H1 heading, or stem of filename.
-static string ExtractTitle(const string &contents, const string &filename_stem) {
-	const string &s = contents;
+struct ParsedFrontmatter {
+	string yaml_block; // owns the buffer that ryml::Tree points into
+	ryml::Tree tree;
+};
 
-	// --- Try YAML frontmatter ---
-	if (s.size() >= 3 && s.substr(0, 3) == "---") {
-		// Find closing ---
-		size_t end = s.find("\n---", 3);
-		if (end != string::npos) {
-			string yaml_block = s.substr(3, end - 3);
-			// Trim leading newline
-			if (!yaml_block.empty() && yaml_block[0] == '\n') {
-				yaml_block = yaml_block.substr(1);
-			}
-			try {
-				ryml::Callbacks callbacks = ryml::get_callbacks();
-				callbacks.m_error = RymlErrorCallback;
-				ryml::Tree tree(callbacks);
-				ryml::EventHandlerTree evth(callbacks);
-				ryml::Parser parser(&evth);
-				ryml::parse_in_place(&parser, ryml::to_substr(yaml_block), &tree);
-				ryml::ConstNodeRef root = tree.rootref();
-				if (root.is_map() && root.has_child("title")) {
-					auto title_node = root["title"];
-					if (title_node.has_val()) {
-						ryml::csubstr val = title_node.val();
-						if (!val.empty()) {
-							return string(val.str, val.len);
-						}
-					}
+// Parse YAML frontmatter block. Returns nullptr if absent or malformed.
+static unique_ptr<ParsedFrontmatter> ParseFrontmatter(const string &s) {
+	if (s.size() < 3 || s.substr(0, 3) != "---") {
+		return nullptr;
+	}
+	size_t end = s.find("\n---", 3);
+	if (end == string::npos) {
+		return nullptr;
+	}
+
+	auto result = make_uniq<ParsedFrontmatter>();
+	result->yaml_block = s.substr(3, end - 3);
+	if (!result->yaml_block.empty() && result->yaml_block[0] == '\n') {
+		result->yaml_block = result->yaml_block.substr(1);
+	}
+
+	try {
+		ryml::Callbacks callbacks = ryml::get_callbacks();
+		callbacks.m_error = RymlErrorCallback;
+		result->tree = ryml::Tree(callbacks);
+		ryml::EventHandlerTree evth(callbacks);
+		ryml::Parser parser(&evth);
+		ryml::parse_in_place(&parser, ryml::to_substr(result->yaml_block), &result->tree);
+
+		if (!result->tree.rootref().is_map()) {
+			return nullptr;
+		}
+	} catch (...) {
+		return nullptr;
+	}
+
+	return result;
+}
+
+// Extract title: frontmatter title > first H1 heading > filename stem.
+static string ExtractTitle(const string &contents, const string &filename_stem,
+                           const unique_ptr<ParsedFrontmatter> &fm) {
+	if (fm) {
+		ryml::ConstNodeRef root = fm->tree.rootref();
+		if (root.has_child("title")) {
+			auto title_node = root["title"];
+			if (title_node.has_val()) {
+				ryml::csubstr val = title_node.val();
+				if (!val.empty()) {
+					return string(val.str, val.len);
 				}
-			} catch (...) {
-				// Malformed YAML — fall through
 			}
 		}
 	}
 
 	// --- Try first H1 heading via cmark-gfm ---
-	cmark_node *doc = cmark_parse_document(s.c_str(), s.size(), CMARK_OPT_DEFAULT);
+	cmark_node *doc = cmark_parse_document(contents.c_str(), contents.size(), CMARK_OPT_DEFAULT);
 	if (doc) {
 		string heading_text;
 		cmark_node *node = cmark_node_first_child(doc);
@@ -153,6 +171,8 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	names.emplace_back("relative_path");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("title");
+	return_types.emplace_back(LogicalType::JSON());
+	names.emplace_back("properties");
 
 	return std::move(result);
 }
@@ -192,12 +212,19 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		}
 
 		string contents = ReadFileContents(fs, filepath);
-		string title = ExtractTitle(contents, stem);
+		auto fm = ParseFrontmatter(contents);
+		string title = ExtractTitle(contents, stem, fm);
+		string properties_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
 
 		output.data[0].SetValue(count, Value(filename));
 		output.data[1].SetValue(count, Value(filepath));
 		output.data[2].SetValue(count, Value(relative_path));
 		output.data[3].SetValue(count, Value(title));
+		if (properties_json.empty()) {
+			output.data[4].SetValue(count, Value(nullptr));
+		} else {
+			output.data[4].SetValue(count, Value(properties_json));
+		}
 		count++;
 		state.position++;
 	}

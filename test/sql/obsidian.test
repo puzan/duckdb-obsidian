@@ -5,6 +5,9 @@
 # Require statement will ensure this test is run with this extension loaded
 require obsidian
 
+statement ok
+LOAD json;
+
 # obsidian_notes returns filename, filepath, relative_path and title columns
 query IIII
 SELECT filename, filepath, relative_path, title FROM obsidian_notes('test/sql/vault') ORDER BY filename;
@@ -53,6 +56,24 @@ query II
 SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_d.md';
 ----
 note_d.md	note_d
+
+# properties: NULL when no frontmatter
+query II
+SELECT filename, properties FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_a.md';
+----
+note_a.md	NULL
+
+# properties: JSON object with all frontmatter fields
+query II
+SELECT filename, properties FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_c.md';
+----
+note_c.md	{"title": "Title From Frontmatter","tags": ["test"]}
+
+# properties: can query specific field with json_extract_string
+query II
+SELECT filename, json_extract_string(properties, '$.title') FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_c.md';
+----
+note_c.md	Title From Frontmatter
 
 # obsidian_notes errors on a directory without .obsidian
 statement error
