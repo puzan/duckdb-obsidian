@@ -61,6 +61,8 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	names.emplace_back("filename");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("filepath");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("relative_path");
 
 	return std::move(result);
 }
@@ -82,8 +84,19 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		auto sep = filepath.find_last_of("/\\");
 		string filename = (sep == string::npos) ? filepath : filepath.substr(sep + 1);
 
+		// Build relative path from vault root
+		string relative_path = filepath;
+		const string &vault_path = bind_data.vault_path;
+		if (filepath.size() > vault_path.size() && filepath.substr(0, vault_path.size()) == vault_path) {
+			relative_path = filepath.substr(vault_path.size());
+			if (!relative_path.empty() && (relative_path[0] == '/' || relative_path[0] == '\\')) {
+				relative_path = relative_path.substr(1);
+			}
+		}
+
 		output.data[0].SetValue(count, Value(filename));
 		output.data[1].SetValue(count, Value(filepath));
+		output.data[2].SetValue(count, Value(relative_path));
 		count++;
 		state.position++;
 	}

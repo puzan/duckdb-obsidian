@@ -5,12 +5,12 @@
 # Require statement will ensure this test is run with this extension loaded
 require obsidian
 
-# obsidian_notes returns filename and filepath columns
-query II
-SELECT filename, filepath FROM obsidian_notes('test/sql/vault') ORDER BY filename;
+# obsidian_notes returns filename, filepath and relative_path columns
+query III
+SELECT filename, filepath, relative_path FROM obsidian_notes('test/sql/vault') ORDER BY filename;
 ----
-note_a.md	test/sql/vault/note_a.md
-note_b.md	test/sql/vault/subdir/note_b.md
+note_a.md	test/sql/vault/note_a.md	note_a.md
+note_b.md	test/sql/vault/subdir/note_b.md	subdir/note_b.md
 
 # obsidian_notes errors on a directory without .obsidian
 statement error
