@@ -4,6 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/main/extension_helper.hpp"
 
 #include <cmark-gfm.h>
 #include <ryml/ryml.hpp>
@@ -239,6 +240,8 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 }
 
 static void LoadInternal(ExtensionLoader &loader) {
+	ExtensionHelper::TryAutoLoadExtension(loader.GetDatabaseInstance(), "json");
+
 	// Register obsidian_notes table function
 	TableFunction obsidian_notes_function("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction,
 	                                      ObsidianNotesBind, ObsidianNotesInitGlobal);

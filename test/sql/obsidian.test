@@ -5,9 +5,6 @@
 # Require statement will ensure this test is run with this extension loaded
 require obsidian
 
-statement ok
-LOAD json;
-
 # obsidian_notes returns filename, filepath, relative_path and title columns
 query IIII
 SELECT filename, filepath, relative_path, title FROM obsidian_notes('test/sql/vault') ORDER BY filename;
