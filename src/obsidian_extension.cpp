@@ -62,6 +62,7 @@ static string ReadFileContents(FileSystem &fs, const string &path) {
 struct ParsedFrontmatter {
 	string yaml_block; // owns the buffer that ryml::Tree points into
 	ryml::Tree tree;
+	size_t body_offset = 0; // byte offset in the original file where body starts
 };
 
 // Parse YAML frontmatter block. Returns nullptr if absent or malformed.
@@ -78,6 +79,12 @@ static unique_ptr<ParsedFrontmatter> ParseFrontmatter(const string &s) {
 	result->yaml_block = s.substr(3, end - 3);
 	if (!result->yaml_block.empty() && result->yaml_block[0] == '\n') {
 		result->yaml_block = result->yaml_block.substr(1);
+	}
+
+	// body starts after the closing "---\n"
+	result->body_offset = end + 4;
+	if (result->body_offset < s.size() && s[result->body_offset] == '\n') {
+		result->body_offset++;
 	}
 
 	try {
@@ -143,56 +150,65 @@ static void ExtractWikiLinks(const string &text, vector<InternalLink> &links) {
 	}
 }
 
-// Extract all internal [[wiki-links]] from a note:
-// - from frontmatter yaml_block (if present)
-// - from document body via cmark-gfm AST (TEXT nodes only, skipping code blocks)
-static vector<InternalLink> ExtractInternalLinks(const string &contents,
-                                                 const unique_ptr<ParsedFrontmatter> &fm) {
+struct ParsedBody {
+	string h1_heading;
 	vector<InternalLink> links;
+};
+
+// Parse the document body once via cmark-gfm AST, extracting:
+// - first H1 heading text
+// - all [[wiki-links]] from TEXT nodes (skipping code blocks)
+// Also extracts wiki-links from frontmatter yaml_block if present.
+static ParsedBody ParseBody(const string &contents, const unique_ptr<ParsedFrontmatter> &fm) {
+	ParsedBody result;
 
 	// 1. Frontmatter: regex over raw yaml block
 	if (fm) {
-		ExtractWikiLinks(fm->yaml_block, links);
+		ExtractWikiLinks(fm->yaml_block, result.links);
 	}
 
-	// 2. Body: skip frontmatter block so cmark doesn't re-parse it as text
+	// 2. Body: skip frontmatter so cmark doesn't re-parse it as text
 	const char *body_start = contents.c_str();
 	size_t body_size = contents.size();
-	if (fm && contents.size() >= 3 && contents.substr(0, 3) == "---") {
-		size_t end = contents.find("\n---", 3);
-		if (end != string::npos) {
-			// skip past the closing "---" and the following newline if present
-			size_t body_offset = end + 4;
-			if (body_offset < contents.size() && contents[body_offset] == '\n') {
-				body_offset++;
-			}
-			body_start = contents.c_str() + body_offset;
-			body_size = contents.size() - body_offset;
-		}
+	if (fm) {
+		body_start = contents.c_str() + fm->body_offset;
+		body_size = contents.size() - fm->body_offset;
 	}
 
-	// Walk cmark-gfm AST, collect TEXT nodes only (skips CODE / CODE_BLOCK)
 	cmark_node *doc = cmark_parse_document(body_start, body_size, CMARK_OPT_DEFAULT);
-	if (doc) {
-		cmark_iter *iter = cmark_iter_new(doc);
-		cmark_event_type ev;
-		while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
-			if (ev != CMARK_EVENT_ENTER) {
-				continue;
-			}
-			cmark_node *node = cmark_iter_get_node(iter);
-			if (cmark_node_get_type(node) == CMARK_NODE_TEXT) {
-				const char *lit = cmark_node_get_literal(node);
-				if (lit) {
-					ExtractWikiLinks(string(lit), links);
+	if (!doc) {
+		return result;
+	}
+
+	cmark_iter *iter = cmark_iter_new(doc);
+	cmark_event_type ev;
+	while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+		if (ev != CMARK_EVENT_ENTER) {
+			continue;
+		}
+		cmark_node *node = cmark_iter_get_node(iter);
+		cmark_node_type type = cmark_node_get_type(node);
+
+		if (type == CMARK_NODE_TEXT) {
+			const char *lit = cmark_node_get_literal(node);
+			if (lit) {
+				ExtractWikiLinks(string(lit), result.links);
+
+				// Collect H1 heading text (first one only)
+				if (result.h1_heading.empty()) {
+					cmark_node *parent = cmark_node_parent(node);
+					if (parent && cmark_node_get_type(parent) == CMARK_NODE_HEADING &&
+					    cmark_node_get_heading_level(parent) == 1) {
+						result.h1_heading += lit;
+					}
 				}
 			}
 		}
-		cmark_iter_free(iter);
-		cmark_node_free(doc);
 	}
+	cmark_iter_free(iter);
+	cmark_node_free(doc);
 
-	return links;
+	return result;
 }
 
 static LogicalType InternalLinkStructType() {
@@ -213,9 +229,9 @@ static Value InternalLinkToValue(const InternalLink &link, const LogicalType &st
 	return Value::STRUCT(std::move(fields));
 }
 
-// Extract title: frontmatter <title_property> > first H1 heading > filename stem.
-static string ExtractTitle(const string &contents, const string &filename_stem,
-                           const unique_ptr<ParsedFrontmatter> &fm, const string &title_property) {
+// Resolve title: frontmatter <title_property> > first H1 heading > filename stem.
+static string ResolveTitle(const string &filename_stem, const unique_ptr<ParsedFrontmatter> &fm,
+                           const string &title_property, const string &h1_heading) {
 	if (fm) {
 		ryml::ConstNodeRef root = fm->tree.rootref();
 		ryml::csubstr prop_key = ryml::to_csubstr(title_property);
@@ -230,34 +246,10 @@ static string ExtractTitle(const string &contents, const string &filename_stem,
 		}
 	}
 
-	// --- Try first H1 heading via cmark-gfm ---
-	cmark_node *doc = cmark_parse_document(contents.c_str(), contents.size(), CMARK_OPT_DEFAULT);
-	if (doc) {
-		string heading_text;
-		cmark_node *node = cmark_node_first_child(doc);
-		while (node) {
-			if (cmark_node_get_type(node) == CMARK_NODE_HEADING && cmark_node_get_heading_level(node) == 1) {
-				cmark_node *child = cmark_node_first_child(node);
-				while (child) {
-					if (cmark_node_get_type(child) == CMARK_NODE_TEXT) {
-						const char *lit = cmark_node_get_literal(child);
-						if (lit) {
-							heading_text += lit;
-						}
-					}
-					child = cmark_node_next(child);
-				}
-				break;
-			}
-			node = cmark_node_next(node);
-		}
-		cmark_node_free(doc);
-		if (!heading_text.empty()) {
-			return heading_text;
-		}
+	if (!h1_heading.empty()) {
+		return h1_heading;
 	}
 
-	// --- Fallback: filename without .md extension ---
 	return filename_stem;
 }
 
@@ -339,9 +331,9 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 		string contents = ReadFileContents(fs, filepath);
 		auto fm = ParseFrontmatter(contents);
-		string title = ExtractTitle(contents, stem, fm, bind_data.title_property);
+		auto body = ParseBody(contents, fm);
+		string title = ResolveTitle(stem, fm, bind_data.title_property, body.h1_heading);
 		string properties_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
-		auto links = ExtractInternalLinks(contents, fm);
 
 		output.data[0].SetValue(count, Value(filename));
 		output.data[1].SetValue(count, Value(filepath));
@@ -355,8 +347,8 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 		auto struct_type = InternalLinkStructType();
 		vector<Value> link_values;
-		link_values.reserve(links.size());
-		for (const auto &link : links) {
+		link_values.reserve(body.links.size());
+		for (const auto &link : body.links) {
 			link_values.push_back(InternalLinkToValue(link, struct_type));
 		}
 		output.data[5].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
