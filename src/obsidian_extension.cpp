@@ -1,12 +1,23 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "obsidian_extension.hpp"
-#include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/function/table_function.hpp"
 
+#include <cmark-gfm.h>
+#include <ryml/ryml.hpp>
+#include <ryml/ryml_std.hpp>
+
+#include <stdexcept>
+
 namespace duckdb {
+
+// ryml calls this instead of abort() when it encounters a parse error.
+// We throw so that our try/catch can handle malformed YAML gracefully.
+static void RymlErrorCallback(const char *msg, size_t msg_len, ryml::Location /*loc*/, void * /*userdata*/) {
+	throw std::runtime_error(std::string(msg, msg_len));
+}
 
 //===--------------------------------------------------------------------===//
 // obsidian_notes table function
@@ -36,6 +47,83 @@ static void CollectMarkdownFiles(FileSystem &fs, const string &dir, vector<strin
 	});
 }
 
+// Read file contents into a string
+static string ReadFileContents(FileSystem &fs, const string &path) {
+	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+	auto file_size = fs.GetFileSize(*handle);
+	string contents(file_size, '\0');
+	fs.Read(*handle, &contents[0], file_size);
+	return contents;
+}
+
+// Extract title from frontmatter property, or first H1 heading, or stem of filename.
+static string ExtractTitle(const string &contents, const string &filename_stem) {
+	const string &s = contents;
+
+	// --- Try YAML frontmatter ---
+	if (s.size() >= 3 && s.substr(0, 3) == "---") {
+		// Find closing ---
+		size_t end = s.find("\n---", 3);
+		if (end != string::npos) {
+			string yaml_block = s.substr(3, end - 3);
+			// Trim leading newline
+			if (!yaml_block.empty() && yaml_block[0] == '\n') {
+				yaml_block = yaml_block.substr(1);
+			}
+			try {
+				ryml::Callbacks callbacks = ryml::get_callbacks();
+				callbacks.m_error = RymlErrorCallback;
+				ryml::Tree tree(callbacks);
+				ryml::EventHandlerTree evth(callbacks);
+				ryml::Parser parser(&evth);
+				ryml::parse_in_place(&parser, ryml::to_substr(yaml_block), &tree);
+				ryml::ConstNodeRef root = tree.rootref();
+				if (root.is_map() && root.has_child("title")) {
+					auto title_node = root["title"];
+					if (title_node.has_val()) {
+						ryml::csubstr val = title_node.val();
+						if (!val.empty()) {
+							return string(val.str, val.len);
+						}
+					}
+				}
+			} catch (...) {
+				// Malformed YAML — fall through
+			}
+		}
+	}
+
+	// --- Try first H1 heading via cmark-gfm ---
+	cmark_node *doc = cmark_parse_document(s.c_str(), s.size(), CMARK_OPT_DEFAULT);
+	if (doc) {
+		string heading_text;
+		cmark_node *node = cmark_node_first_child(doc);
+		while (node) {
+			if (cmark_node_get_type(node) == CMARK_NODE_HEADING && cmark_node_get_heading_level(node) == 1) {
+				cmark_node *child = cmark_node_first_child(node);
+				while (child) {
+					if (cmark_node_get_type(child) == CMARK_NODE_TEXT) {
+						const char *lit = cmark_node_get_literal(child);
+						if (lit) {
+							heading_text += lit;
+						}
+					}
+					child = cmark_node_next(child);
+				}
+				break;
+			}
+			node = cmark_node_next(node);
+		}
+		cmark_node_free(doc);
+		if (!heading_text.empty()) {
+			return heading_text;
+		}
+	}
+
+	// --- Fallback: filename without .md extension ---
+	return filename_stem;
+}
+
 static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<string> &names) {
 	if (input.inputs.empty() || input.inputs[0].IsNull()) {
@@ -63,6 +151,8 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	names.emplace_back("filepath");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("relative_path");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("title");
 
 	return std::move(result);
 }
@@ -75,6 +165,7 @@ static unique_ptr<GlobalTableFunctionState> ObsidianNotesInitGlobal(ClientContex
 static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->Cast<ObsidianNotesScanData>();
 	auto &state = data_p.global_state->Cast<ObsidianNotesScanState>();
+	auto &fs = FileSystem::GetFileSystem(context);
 
 	idx_t count = 0;
 	while (state.position < bind_data.files.size() && count < STANDARD_VECTOR_SIZE) {
@@ -83,6 +174,12 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		// Extract just the filename from the full path
 		auto sep = filepath.find_last_of("/\\");
 		string filename = (sep == string::npos) ? filepath : filepath.substr(sep + 1);
+
+		// Filename stem (without .md)
+		string stem = filename;
+		if (stem.size() > 3) {
+			stem = stem.substr(0, stem.size() - 3);
+		}
 
 		// Build relative path from vault root
 		string relative_path = filepath;
@@ -94,9 +191,13 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 			}
 		}
 
+		string contents = ReadFileContents(fs, filepath);
+		string title = ExtractTitle(contents, stem);
+
 		output.data[0].SetValue(count, Value(filename));
 		output.data[1].SetValue(count, Value(filepath));
 		output.data[2].SetValue(count, Value(relative_path));
+		output.data[3].SetValue(count, Value(title));
 		count++;
 		state.position++;
 	}

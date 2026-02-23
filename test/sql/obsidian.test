@@ -5,12 +5,54 @@
 # Require statement will ensure this test is run with this extension loaded
 require obsidian
 
-# obsidian_notes returns filename, filepath and relative_path columns
-query III
-SELECT filename, filepath, relative_path FROM obsidian_notes('test/sql/vault') ORDER BY filename;
+# obsidian_notes returns filename, filepath, relative_path and title columns
+query IIII
+SELECT filename, filepath, relative_path, title FROM obsidian_notes('test/sql/vault') ORDER BY filename;
 ----
-note_a.md	test/sql/vault/note_a.md	note_a.md
-note_b.md	test/sql/vault/subdir/note_b.md	subdir/note_b.md
+note_a.md	test/sql/vault/note_a.md	note_a.md	Note A
+note_b.md	test/sql/vault/subdir/note_b.md	subdir/note_b.md	Note B
+note_c.md	test/sql/vault/note_c.md	note_c.md	Title From Frontmatter
+note_d.md	test/sql/vault/note_d.md	note_d.md	note_d
+note_e.md	test/sql/vault/note_e.md	note_e.md	Title From Frontmatter
+note_f.md	test/sql/vault/note_f.md	note_f.md	Heading As Title
+note_g.md	test/sql/vault/note_g.md	note_g.md	Quoted Title
+note_h.md	test/sql/vault/note_h.md	note_h.md	Title From Heading
+
+# title: frontmatter takes priority over H1 heading
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_e.md';
+----
+note_e.md	Title From Frontmatter
+
+# title: H1 heading used when frontmatter has no title property
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_f.md';
+----
+note_f.md	Heading As Title
+
+# title: H1 used when there is no frontmatter at all
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_a.md';
+----
+note_a.md	Note A
+
+# title: quoted string value in frontmatter (ryml >> operator abort regression)
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_g.md';
+----
+note_g.md	Quoted Title
+
+# title: malformed YAML frontmatter (container as key) falls back to H1 (ryml abort regression)
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_h.md';
+----
+note_h.md	Title From Heading
+
+# title: filename stem used when no frontmatter and no heading (double-free regression)
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_d.md';
+----
+note_d.md	note_d
 
 # obsidian_notes errors on a directory without .obsidian
 statement error
