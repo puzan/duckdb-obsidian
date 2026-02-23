@@ -223,7 +223,8 @@ static LogicalType InternalLinkStructType() {
 static Value InternalLinkToValue(const InternalLink &link, const LogicalType &struct_type) {
 	child_list_t<Value> fields;
 	fields.emplace_back("target", Value(link.target));
-	fields.emplace_back("display_name", link.display_name.empty() ? Value(LogicalType::VARCHAR) : Value(link.display_name));
+	fields.emplace_back("display_name",
+	                    link.display_name.empty() ? Value(LogicalType::VARCHAR) : Value(link.display_name));
 	fields.emplace_back("header", link.header.empty() ? Value(LogicalType::VARCHAR) : Value(link.header));
 	fields.emplace_back("block_ref", link.block_ref.empty() ? Value(LogicalType::VARCHAR) : Value(link.block_ref));
 	return Value::STRUCT(std::move(fields));
