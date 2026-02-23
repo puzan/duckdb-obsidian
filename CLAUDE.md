@@ -8,7 +8,9 @@ This is a DuckDB extension named "obsidian", built from the DuckDB extension tem
 
 ## Build Commands
 
-Requires VCPKG installed and `VCPKG_TOOLCHAIN_PATH` set before building.
+Requires VCPKG installed. Build environment:
+- `GEN=ninja`
+- `VCPKG_TOOLCHAIN_PATH=/Users/puzan/.vcpkg/scripts/buildsystems/vcpkg.cmake`
 
 ```bash
 make                  # Build release binary
