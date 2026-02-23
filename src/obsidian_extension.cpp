@@ -50,6 +50,11 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 		throw IOException("Vault path does not exist: " + result->vault_path);
 	}
 
+	string obsidian_config_dir = fs.JoinPath(result->vault_path, ".obsidian");
+	if (!fs.DirectoryExists(obsidian_config_dir)) {
+		throw IOException("Path is not an Obsidian vault (missing .obsidian directory): " + result->vault_path);
+	}
+
 	CollectMarkdownFiles(fs, result->vault_path, result->files);
 
 	return_types.emplace_back(LogicalType::VARCHAR);

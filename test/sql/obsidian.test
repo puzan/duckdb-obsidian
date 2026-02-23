@@ -11,3 +11,9 @@ SELECT filename, filepath FROM obsidian_notes('test/sql/vault') ORDER BY filenam
 ----
 note_a.md	test/sql/vault/note_a.md
 note_b.md	test/sql/vault/subdir/note_b.md
+
+# obsidian_notes errors on a directory without .obsidian
+statement error
+SELECT * FROM obsidian_notes('test/sql/not_a_vault');
+----
+not an Obsidian vault
