@@ -25,6 +25,7 @@ static void RymlErrorCallback(const char *msg, size_t msg_len, ryml::Location /*
 
 struct ObsidianNotesScanData : public TableFunctionData {
 	string vault_path;
+	string title_property;
 	vector<string> files;
 };
 
@@ -95,13 +96,14 @@ static unique_ptr<ParsedFrontmatter> ParseFrontmatter(const string &s) {
 	return result;
 }
 
-// Extract title: frontmatter title > first H1 heading > filename stem.
+// Extract title: frontmatter <title_property> > first H1 heading > filename stem.
 static string ExtractTitle(const string &contents, const string &filename_stem,
-                           const unique_ptr<ParsedFrontmatter> &fm) {
+                           const unique_ptr<ParsedFrontmatter> &fm, const string &title_property) {
 	if (fm) {
 		ryml::ConstNodeRef root = fm->tree.rootref();
-		if (root.has_child("title")) {
-			auto title_node = root["title"];
+		ryml::csubstr prop_key = ryml::to_csubstr(title_property);
+		if (root.has_child(prop_key)) {
+			auto title_node = root[prop_key];
 			if (title_node.has_val()) {
 				ryml::csubstr val = title_node.val();
 				if (!val.empty()) {
@@ -150,6 +152,11 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 
 	auto result = make_uniq<ObsidianNotesScanData>();
 	result->vault_path = input.inputs[0].GetValue<string>();
+	result->title_property = "title";
+	auto it = input.named_parameters.find("title_property");
+	if (it != input.named_parameters.end() && !it->second.IsNull()) {
+		result->title_property = it->second.GetValue<string>();
+	}
 
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (!fs.DirectoryExists(result->vault_path)) {
@@ -213,7 +220,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 		string contents = ReadFileContents(fs, filepath);
 		auto fm = ParseFrontmatter(contents);
-		string title = ExtractTitle(contents, stem, fm);
+		string title = ExtractTitle(contents, stem, fm, bind_data.title_property);
 		string properties_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
 
 		output.data[0].SetValue(count, Value(filename));
@@ -235,6 +242,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register obsidian_notes table function
 	TableFunction obsidian_notes_function("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction,
 	                                      ObsidianNotesBind, ObsidianNotesInitGlobal);
+	obsidian_notes_function.named_parameters["title_property"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(obsidian_notes_function);
 }
 

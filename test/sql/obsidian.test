@@ -21,6 +21,7 @@ note_f.md	test/sql/vault/note_f.md	note_f.md	Heading As Title
 note_g.md	test/sql/vault/note_g.md	note_g.md	Quoted Title
 note_h.md	test/sql/vault/note_h.md	note_h.md	Title From Heading
 note_i.md	test/sql/vault/note_i.md	note_i.md	Note With Multiple Tags
+note_j.md	test/sql/vault/note_j.md	note_j.md	Default Title
 
 # title: frontmatter takes priority over H1 heading
 query II
@@ -81,6 +82,18 @@ query II
 SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE json_contains(properties->'$.tags', '"projects"') ORDER BY filename;
 ----
 note_i.md	Note With Multiple Tags
+
+# title_property: custom frontmatter property used as title source
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault', title_property='name') WHERE filename = 'note_j.md';
+----
+note_j.md	Custom Property Title
+
+# title_property: default is 'title' when parameter is omitted
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_j.md';
+----
+note_j.md	Default Title
 
 # obsidian_notes errors on a directory without .obsidian
 statement error
