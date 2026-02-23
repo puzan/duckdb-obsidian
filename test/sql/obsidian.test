@@ -1,0 +1,23 @@
+# name: test/sql/obsidian.test
+# description: test obsidian extension
+# group: [sql]
+
+# Before we load the extension, this will fail
+statement error
+SELECT obsidian('Sam');
+----
+Catalog Error: Scalar Function with name obsidian does not exist!
+
+# Require statement will ensure this test is run with this extension loaded
+require obsidian
+
+# Confirm the extension works
+query I
+SELECT obsidian('Sam');
+----
+Obsidian Sam 🐥
+
+query I
+SELECT obsidian_openssl_version('Michael') ILIKE 'Obsidian Michael, my linked OpenSSL version is OpenSSL%';
+----
+true
