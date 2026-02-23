@@ -20,6 +20,7 @@ note_e.md	test/sql/vault/note_e.md	note_e.md	Title From Frontmatter
 note_f.md	test/sql/vault/note_f.md	note_f.md	Heading As Title
 note_g.md	test/sql/vault/note_g.md	note_g.md	Quoted Title
 note_h.md	test/sql/vault/note_h.md	note_h.md	Title From Heading
+note_i.md	test/sql/vault/note_i.md	note_i.md	Note With Multiple Tags
 
 # title: frontmatter takes priority over H1 heading
 query II
@@ -74,6 +75,12 @@ query II
 SELECT filename, json_extract_string(properties, '$.title') FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_c.md';
 ----
 note_c.md	Title From Frontmatter
+
+# properties: filter by tag presence using json_contains
+query II
+SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE json_contains(properties->'$.tags', '"projects"') ORDER BY filename;
+----
+note_i.md	Note With Multiple Tags
 
 # obsidian_notes errors on a directory without .obsidian
 statement error
