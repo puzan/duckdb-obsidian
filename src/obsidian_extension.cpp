@@ -107,12 +107,13 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register a scalar function
-	auto obsidian_scalar_function = ScalarFunction("obsidian", {LogicalType::VARCHAR}, LogicalType::VARCHAR, ObsidianScalarFun);
+	auto obsidian_scalar_function =
+	    ScalarFunction("obsidian", {LogicalType::VARCHAR}, LogicalType::VARCHAR, ObsidianScalarFun);
 	loader.RegisterFunction(obsidian_scalar_function);
 
 	// Register another scalar function
-	auto obsidian_openssl_version_scalar_function = ScalarFunction("obsidian_openssl_version", {LogicalType::VARCHAR},
-	                                                            LogicalType::VARCHAR, ObsidianOpenSSLVersionScalarFun);
+	auto obsidian_openssl_version_scalar_function = ScalarFunction(
+	    "obsidian_openssl_version", {LogicalType::VARCHAR}, LogicalType::VARCHAR, ObsidianOpenSSLVersionScalarFun);
 	loader.RegisterFunction(obsidian_openssl_version_scalar_function);
 
 	// Register obsidian_notes table function
