@@ -19,7 +19,7 @@ jobs:
       duckdb_version: v1.4.4
       ci_tools_version: v1.4.4
       extension_name: obsidian
-      vcpkg_commit: 2026.01.16
+      vcpkg_commit: 66c0373dc7fca549e5803087b9487edfe3aca0a1
 
   code-quality-check:
     name: Code Quality Check
