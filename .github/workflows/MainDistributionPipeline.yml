@@ -29,4 +29,3 @@ jobs:
       ci_tools_version: v1.4.4
       extension_name: obsidian
       format_checks: "format"
-      vcpkg_commit: 2026.01.16
