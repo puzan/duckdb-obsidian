@@ -10,6 +10,7 @@
 #include <ryml/ryml.hpp>
 #include <ryml/ryml_std.hpp>
 
+#include <regex>
 #include <stdexcept>
 
 namespace duckdb {
@@ -97,6 +98,121 @@ static unique_ptr<ParsedFrontmatter> ParseFrontmatter(const string &s) {
 	return result;
 }
 
+struct InternalLink {
+	string target;
+	string display_name; // empty = absent
+	string header;       // empty = absent
+	string block_ref;    // empty = absent
+};
+
+// Extract [[wiki-links]] from a plain text string and append to links vector.
+static void ExtractWikiLinks(const string &text, vector<InternalLink> &links) {
+	static const std::regex wiki_link_re(R"(\[\[([^\[\]]+)\]\])");
+	auto begin = std::sregex_iterator(text.begin(), text.end(), wiki_link_re);
+	auto end = std::sregex_iterator();
+	for (auto it = begin; it != end; ++it) {
+		string inner = (*it)[1].str();
+
+		InternalLink link;
+
+		// Split on '|' to get optional display_name
+		auto pipe_pos = inner.find('|');
+		string target_part;
+		if (pipe_pos != string::npos) {
+			link.display_name = inner.substr(pipe_pos + 1);
+			target_part = inner.substr(0, pipe_pos);
+		} else {
+			target_part = inner;
+		}
+
+		// Split target_part on '#' to get optional anchor
+		auto hash_pos = target_part.find('#');
+		if (hash_pos != string::npos) {
+			link.target = target_part.substr(0, hash_pos);
+			string anchor = target_part.substr(hash_pos + 1);
+			if (!anchor.empty() && anchor[0] == '^') {
+				link.block_ref = anchor.substr(1);
+			} else {
+				link.header = anchor;
+			}
+		} else {
+			link.target = target_part;
+		}
+
+		links.push_back(std::move(link));
+	}
+}
+
+// Extract all internal [[wiki-links]] from a note:
+// - from frontmatter yaml_block (if present)
+// - from document body via cmark-gfm AST (TEXT nodes only, skipping code blocks)
+static vector<InternalLink> ExtractInternalLinks(const string &contents,
+                                                 const unique_ptr<ParsedFrontmatter> &fm) {
+	vector<InternalLink> links;
+
+	// 1. Frontmatter: regex over raw yaml block
+	if (fm) {
+		ExtractWikiLinks(fm->yaml_block, links);
+	}
+
+	// 2. Body: skip frontmatter block so cmark doesn't re-parse it as text
+	const char *body_start = contents.c_str();
+	size_t body_size = contents.size();
+	if (fm && contents.size() >= 3 && contents.substr(0, 3) == "---") {
+		size_t end = contents.find("\n---", 3);
+		if (end != string::npos) {
+			// skip past the closing "---" and the following newline if present
+			size_t body_offset = end + 4;
+			if (body_offset < contents.size() && contents[body_offset] == '\n') {
+				body_offset++;
+			}
+			body_start = contents.c_str() + body_offset;
+			body_size = contents.size() - body_offset;
+		}
+	}
+
+	// Walk cmark-gfm AST, collect TEXT nodes only (skips CODE / CODE_BLOCK)
+	cmark_node *doc = cmark_parse_document(body_start, body_size, CMARK_OPT_DEFAULT);
+	if (doc) {
+		cmark_iter *iter = cmark_iter_new(doc);
+		cmark_event_type ev;
+		while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
+			if (ev != CMARK_EVENT_ENTER) {
+				continue;
+			}
+			cmark_node *node = cmark_iter_get_node(iter);
+			if (cmark_node_get_type(node) == CMARK_NODE_TEXT) {
+				const char *lit = cmark_node_get_literal(node);
+				if (lit) {
+					ExtractWikiLinks(string(lit), links);
+				}
+			}
+		}
+		cmark_iter_free(iter);
+		cmark_node_free(doc);
+	}
+
+	return links;
+}
+
+static LogicalType InternalLinkStructType() {
+	child_list_t<LogicalType> fields;
+	fields.emplace_back("target", LogicalType::VARCHAR);
+	fields.emplace_back("display_name", LogicalType::VARCHAR);
+	fields.emplace_back("header", LogicalType::VARCHAR);
+	fields.emplace_back("block_ref", LogicalType::VARCHAR);
+	return LogicalType::STRUCT(std::move(fields));
+}
+
+static Value InternalLinkToValue(const InternalLink &link, const LogicalType &struct_type) {
+	child_list_t<Value> fields;
+	fields.emplace_back("target", Value(link.target));
+	fields.emplace_back("display_name", link.display_name.empty() ? Value(LogicalType::VARCHAR) : Value(link.display_name));
+	fields.emplace_back("header", link.header.empty() ? Value(LogicalType::VARCHAR) : Value(link.header));
+	fields.emplace_back("block_ref", link.block_ref.empty() ? Value(LogicalType::VARCHAR) : Value(link.block_ref));
+	return Value::STRUCT(std::move(fields));
+}
+
 // Extract title: frontmatter <title_property> > first H1 heading > filename stem.
 static string ExtractTitle(const string &contents, const string &filename_stem,
                            const unique_ptr<ParsedFrontmatter> &fm, const string &title_property) {
@@ -181,6 +297,8 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	names.emplace_back("title");
 	return_types.emplace_back(LogicalType::JSON());
 	names.emplace_back("properties");
+	return_types.emplace_back(LogicalType::LIST(InternalLinkStructType()));
+	names.emplace_back("internal_links");
 
 	return std::move(result);
 }
@@ -223,6 +341,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		auto fm = ParseFrontmatter(contents);
 		string title = ExtractTitle(contents, stem, fm, bind_data.title_property);
 		string properties_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
+		auto links = ExtractInternalLinks(contents, fm);
 
 		output.data[0].SetValue(count, Value(filename));
 		output.data[1].SetValue(count, Value(filepath));
@@ -233,6 +352,14 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		} else {
 			output.data[4].SetValue(count, Value(properties_json));
 		}
+
+		auto struct_type = InternalLinkStructType();
+		vector<Value> link_values;
+		link_values.reserve(links.size());
+		for (const auto &link : links) {
+			link_values.push_back(InternalLinkToValue(link, struct_type));
+		}
+		output.data[5].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
 		count++;
 		state.position++;
 	}

@@ -19,6 +19,7 @@ note_g.md	test/sql/vault/note_g.md	note_g.md	Quoted Title
 note_h.md	test/sql/vault/note_h.md	note_h.md	Title From Heading
 note_i.md	test/sql/vault/note_i.md	note_i.md	Note With Multiple Tags
 note_j.md	test/sql/vault/note_j.md	note_j.md	Default Title
+note_k.md	test/sql/vault/note_k.md	note_k.md	Note With Links
 
 # title: frontmatter takes priority over H1 heading
 query II
@@ -91,6 +92,30 @@ query II
 SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_j.md';
 ----
 note_j.md	Default Title
+
+# internal_links: empty list when note has no wiki-links
+query II
+SELECT filename, internal_links FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_a.md';
+----
+note_a.md	[]
+
+# internal_links: all link types parsed correctly (basic, alias, header, block_ref, header+alias)
+query II
+SELECT filename, internal_links FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_k.md';
+----
+note_k.md	[{'target': note_a, 'display_name': NULL, 'header': NULL, 'block_ref': NULL}, {'target': note_b, 'display_name': NULL, 'header': NULL, 'block_ref': NULL}, {'target': note_c, 'display_name': My Alias, 'header': NULL, 'block_ref': NULL}, {'target': note_d, 'display_name': NULL, 'header': Some Header, 'block_ref': NULL}, {'target': note_e, 'display_name': NULL, 'header': NULL, 'block_ref': abc123}, {'target': note_f, 'display_name': Label, 'header': Section, 'block_ref': NULL}]
+
+# internal_links: link from frontmatter is included
+query II
+SELECT filename, internal_links[1].target FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_k.md';
+----
+note_k.md	note_a
+
+# internal_links: filter notes that link to a specific target
+query I
+SELECT filename FROM obsidian_notes('test/sql/vault') WHERE list_contains(list_transform(internal_links, l -> l.target), 'note_b') ORDER BY filename;
+----
+note_k.md
 
 # obsidian_notes errors on a directory without .obsidian
 statement error
