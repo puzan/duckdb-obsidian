@@ -5,8 +5,7 @@
 # Require statement will ensure this test is run with this extension loaded
 require obsidian
 
-statement ok
-LOAD json;
+require json
 
 # obsidian_notes returns filename, filepath, relative_path and title columns
 query IIII
