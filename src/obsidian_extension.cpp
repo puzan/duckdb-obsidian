@@ -13,6 +13,7 @@
 
 #include <regex>
 #include <stdexcept>
+#include <mutex>
 
 namespace duckdb {
 
@@ -35,8 +36,21 @@ struct ObsidianNotesScanData : public TableFunctionData {
 };
 
 struct ObsidianNotesScanState : public GlobalTableFunctionState {
+	std::mutex lock;
 	idx_t position = 0;
+	idx_t max_threads;
+
+	explicit ObsidianNotesScanState(idx_t max_threads_p) : max_threads(max_threads_p) {
+	}
+
+	idx_t MaxThreads() const override {
+		return max_threads;
+	}
 };
+
+// Per-thread local state. Work is distributed dynamically via the global position counter,
+// so no per-thread cursor is needed here — the struct exists only to enable parallel execution.
+struct ObsidianNotesLocalState : public LocalTableFunctionState {};
 
 static void CollectMarkdownFiles(FileSystem &fs, const string &dir, vector<string> &files) {
 	fs.ListFiles(dir, [&](const string &name, bool is_dir) {
@@ -303,13 +317,38 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 
 static unique_ptr<GlobalTableFunctionState> ObsidianNotesInitGlobal(ClientContext &context,
                                                                     TableFunctionInitInput &input) {
-	return make_uniq<ObsidianNotesScanState>();
+	auto &bind_data = input.bind_data->Cast<ObsidianNotesScanData>();
+	// Allow one thread per file; DuckDB caps this at the actual thread-pool size.
+	idx_t max_threads = bind_data.files.empty() ? 1 : bind_data.files.size();
+	return make_uniq<ObsidianNotesScanState>(max_threads);
+}
+
+static unique_ptr<LocalTableFunctionState> ObsidianNotesInitLocal(ExecutionContext &context,
+                                                                  TableFunctionInitInput &input,
+                                                                  GlobalTableFunctionState *global_state) {
+	return make_uniq<ObsidianNotesLocalState>();
 }
 
 static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
 	auto &bind_data = data_p.bind_data->Cast<ObsidianNotesScanData>();
-	auto &state = data_p.global_state->Cast<ObsidianNotesScanState>();
+	auto &gstate = data_p.global_state->Cast<ObsidianNotesScanState>();
 	auto &fs = FileSystem::GetFileSystem(context);
+
+	// Atomically claim the next batch of file indices from the shared counter.
+	// The lock is released before any I/O or parsing, so threads overlap on the
+	// expensive work (file reads, YAML/cmark parsing) without serialising each other.
+	idx_t batch_start, batch_end;
+	{
+		std::lock_guard<std::mutex> guard(gstate.lock);
+		batch_start = gstate.position;
+		batch_end = std::min(gstate.position + STANDARD_VECTOR_SIZE, (idx_t)bind_data.files.size());
+		gstate.position = batch_end;
+	}
+
+	if (batch_start >= batch_end) {
+		output.SetCardinality(0);
+		return;
+	}
 
 	// Write directly to flat vector buffers instead of going through Value boxing.
 	// This avoids heap allocations for every cell in the four VARCHAR columns.
@@ -321,8 +360,8 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	auto &props_validity = FlatVector::Validity(output.data[4]);
 
 	idx_t count = 0;
-	while (state.position < bind_data.files.size() && count < STANDARD_VECTOR_SIZE) {
-		const string &filepath = bind_data.files[state.position];
+	for (idx_t i = batch_start; i < batch_end; i++) {
+		const string &filepath = bind_data.files[i];
 
 		// Extract just the filename from the full path
 		auto sep = filepath.find_last_of("/\\");
@@ -369,7 +408,6 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		}
 		output.data[5].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
 		count++;
-		state.position++;
 	}
 	output.SetCardinality(count);
 }
@@ -379,7 +417,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register obsidian_notes table function
 	TableFunction obsidian_notes_function("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction,
-	                                      ObsidianNotesBind, ObsidianNotesInitGlobal);
+	                                      ObsidianNotesBind, ObsidianNotesInitGlobal, ObsidianNotesInitLocal);
 	obsidian_notes_function.named_parameters["title_property"] = LogicalType::VARCHAR;
 	loader.RegisterFunction(obsidian_notes_function);
 }
