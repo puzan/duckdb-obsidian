@@ -10,6 +10,7 @@
 #include <ryml/ryml.hpp>
 #include <ryml/ryml_std.hpp>
 
+#include <algorithm>
 #include <regex>
 #include <stdexcept>
 
@@ -308,7 +309,8 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 	idx_t count = 0;
 	while (state.position < bind_data.files.size() && count < STANDARD_VECTOR_SIZE) {
-		const string &filepath = bind_data.files[state.position];
+		string filepath = bind_data.files[state.position];
+		std::replace(filepath.begin(), filepath.end(), '\\', '/');
 
 		// Extract just the filename from the full path
 		auto sep = filepath.find_last_of("/\\");
