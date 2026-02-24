@@ -3,6 +3,7 @@
 #include "obsidian_extension.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/types/vector.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
@@ -29,6 +30,8 @@ struct ObsidianNotesScanData : public TableFunctionData {
 	string vault_path;
 	string title_property;
 	vector<string> files;
+	// Cached once at bind time; avoids re-constructing the LogicalType per row.
+	LogicalType link_struct_type;
 };
 
 struct ObsidianNotesScanState : public GlobalTableFunctionState {
@@ -44,7 +47,7 @@ static void CollectMarkdownFiles(FileSystem &fs, const string &dir, vector<strin
 		string full_path = fs.JoinPath(dir, name);
 		if (is_dir) {
 			CollectMarkdownFiles(fs, full_path, files);
-		} else if (name.size() > 3 && name.substr(name.size() - 3) == ".md") {
+		} else if (name.size() > 3 && name.compare(name.size() - 3, 3, ".md") == 0) {
 			files.push_back(full_path);
 		}
 	});
@@ -67,7 +70,7 @@ struct ParsedFrontmatter {
 
 // Parse YAML frontmatter block. Returns nullptr if absent or malformed.
 static unique_ptr<ParsedFrontmatter> ParseFrontmatter(const string &s) {
-	if (s.size() < 3 || s.substr(0, 3) != "---") {
+	if (s.size() < 3 || s.compare(0, 3, "---") != 0) {
 		return nullptr;
 	}
 	size_t end = s.find("\n---", 3);
@@ -280,6 +283,8 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 
 	CollectMarkdownFiles(fs, result->vault_path, result->files);
 
+	result->link_struct_type = InternalLinkStructType();
+
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("filename");
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -290,7 +295,7 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	names.emplace_back("title");
 	return_types.emplace_back(LogicalType::JSON());
 	names.emplace_back("properties");
-	return_types.emplace_back(LogicalType::LIST(InternalLinkStructType()));
+	return_types.emplace_back(LogicalType::LIST(result->link_struct_type));
 	names.emplace_back("internal_links");
 
 	return std::move(result);
@@ -305,6 +310,15 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	auto &bind_data = data_p.bind_data->Cast<ObsidianNotesScanData>();
 	auto &state = data_p.global_state->Cast<ObsidianNotesScanState>();
 	auto &fs = FileSystem::GetFileSystem(context);
+
+	// Write directly to flat vector buffers instead of going through Value boxing.
+	// This avoids heap allocations for every cell in the four VARCHAR columns.
+	auto filename_data = FlatVector::GetData<string_t>(output.data[0]);
+	auto filepath_data = FlatVector::GetData<string_t>(output.data[1]);
+	auto relpath_data = FlatVector::GetData<string_t>(output.data[2]);
+	auto title_data = FlatVector::GetData<string_t>(output.data[3]);
+	auto props_data = FlatVector::GetData<string_t>(output.data[4]);
+	auto &props_validity = FlatVector::Validity(output.data[4]);
 
 	idx_t count = 0;
 	while (state.position < bind_data.files.size() && count < STANDARD_VECTOR_SIZE) {
@@ -323,7 +337,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		// Build relative path from vault root
 		string relative_path = filepath;
 		const string &vault_path = bind_data.vault_path;
-		if (filepath.size() > vault_path.size() && filepath.substr(0, vault_path.size()) == vault_path) {
+		if (filepath.size() > vault_path.size() && filepath.compare(0, vault_path.size(), vault_path) == 0) {
 			relative_path = filepath.substr(vault_path.size());
 			if (!relative_path.empty() && (relative_path[0] == '/' || relative_path[0] == '\\')) {
 				relative_path = relative_path.substr(1);
@@ -336,17 +350,18 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		string title = ResolveTitle(stem, fm, bind_data.title_property, body.h1_heading);
 		string properties_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
 
-		output.data[0].SetValue(count, Value(filename));
-		output.data[1].SetValue(count, Value(filepath));
-		output.data[2].SetValue(count, Value(relative_path));
-		output.data[3].SetValue(count, Value(title));
+		filename_data[count] = StringVector::AddString(output.data[0], filename);
+		filepath_data[count] = StringVector::AddString(output.data[1], filepath);
+		relpath_data[count] = StringVector::AddString(output.data[2], relative_path);
+		title_data[count] = StringVector::AddString(output.data[3], title);
 		if (properties_json.empty()) {
-			output.data[4].SetValue(count, Value(nullptr));
+			props_validity.SetInvalid(count);
 		} else {
-			output.data[4].SetValue(count, Value(properties_json));
+			props_data[count] = StringVector::AddString(output.data[4], properties_json);
 		}
 
-		auto struct_type = InternalLinkStructType();
+		// Use cached link_struct_type instead of constructing it on every row.
+		const LogicalType &struct_type = bind_data.link_struct_type;
 		vector<Value> link_values;
 		link_values.reserve(body.links.size());
 		for (const auto &link : body.links) {
