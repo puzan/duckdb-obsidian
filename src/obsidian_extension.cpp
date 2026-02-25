@@ -11,6 +11,7 @@
 #include <ryml/ryml.hpp>
 #include <ryml/ryml_std.hpp>
 
+#include <algorithm>
 #include <regex>
 #include <stdexcept>
 #include <mutex>
@@ -361,7 +362,8 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
-		const string &filepath = bind_data.files[i];
+		string filepath = bind_data.files[i];
+		std::replace(filepath.begin(), filepath.end(), '\\', '/');
 
 		// Extract just the filename from the full path
 		auto sep = filepath.find_last_of("/\\");
@@ -412,6 +414,12 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	output.SetCardinality(count);
 }
 
+static unique_ptr<NodeStatistics> ObsidianNotesCardinality(ClientContext &context, const FunctionData *bind_data) {
+	auto &data = bind_data->Cast<ObsidianNotesScanData>();
+	idx_t n = data.files.size();
+	return make_uniq<NodeStatistics>(n, n);
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
 	ExtensionHelper::TryAutoLoadExtension(loader.GetDatabaseInstance(), "json");
 
@@ -419,6 +427,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction obsidian_notes_function("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction,
 	                                      ObsidianNotesBind, ObsidianNotesInitGlobal, ObsidianNotesInitLocal);
 	obsidian_notes_function.named_parameters["title_property"] = LogicalType::VARCHAR;
+	obsidian_notes_function.cardinality = ObsidianNotesCardinality;
 	loader.RegisterFunction(obsidian_notes_function);
 }
 
