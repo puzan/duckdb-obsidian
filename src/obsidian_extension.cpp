@@ -361,6 +361,12 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	output.SetCardinality(count);
 }
 
+static unique_ptr<NodeStatistics> ObsidianNotesCardinality(ClientContext &context, const FunctionData *bind_data) {
+	auto &data = bind_data->Cast<ObsidianNotesScanData>();
+	idx_t n = data.files.size();
+	return make_uniq<NodeStatistics>(n, n);
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
 	ExtensionHelper::TryAutoLoadExtension(loader.GetDatabaseInstance(), "json");
 
@@ -368,6 +374,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction obsidian_notes_function("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction,
 	                                      ObsidianNotesBind, ObsidianNotesInitGlobal);
 	obsidian_notes_function.named_parameters["title_property"] = LogicalType::VARCHAR;
+	obsidian_notes_function.cardinality = ObsidianNotesCardinality;
 	loader.RegisterFunction(obsidian_notes_function);
 }
 
