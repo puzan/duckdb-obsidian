@@ -124,3 +124,10 @@ statement error
 SELECT * FROM obsidian_notes('test/sql/not_a_vault');
 ----
 not an Obsidian vault
+
+# obsidian_notes() without arguments uses the current working directory
+# The test runner runs from the project root, which is not a vault — verify graceful error
+statement error
+SELECT * FROM obsidian_notes();
+----
+not an Obsidian vault

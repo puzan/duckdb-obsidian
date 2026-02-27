@@ -4,6 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/function/function_set.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
@@ -308,19 +309,21 @@ static string ResolveTitle(const string &filename_stem, const unique_ptr<ParsedF
 
 static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<string> &names) {
-	if (input.inputs.empty() || input.inputs[0].IsNull()) {
-		throw BinderException("obsidian_notes requires a vault path argument");
+	auto result = make_uniq<ObsidianNotesScanData>();
+	auto &fs = FileSystem::GetFileSystem(context);
+
+	if (!input.inputs.empty() && !input.inputs[0].IsNull()) {
+		result->vault_path = input.inputs[0].GetValue<string>();
+	} else {
+		result->vault_path = fs.GetWorkingDirectory();
 	}
 
-	auto result = make_uniq<ObsidianNotesScanData>();
-	result->vault_path = input.inputs[0].GetValue<string>();
 	result->title_property = "title";
 	auto it = input.named_parameters.find("title_property");
 	if (it != input.named_parameters.end() && !it->second.IsNull()) {
 		result->title_property = it->second.GetValue<string>();
 	}
 
-	auto &fs = FileSystem::GetFileSystem(context);
 	if (!fs.DirectoryExists(result->vault_path)) {
 		throw IOException("Vault path does not exist: " + result->vault_path);
 	}
@@ -457,12 +460,24 @@ static unique_ptr<NodeStatistics> ObsidianNotesCardinality(ClientContext &contex
 static void LoadInternal(ExtensionLoader &loader) {
 	ExtensionHelper::TryAutoLoadExtension(loader.GetDatabaseInstance(), "json");
 
-	// Register obsidian_notes table function
-	TableFunction obsidian_notes_function("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction,
-	                                      ObsidianNotesBind, ObsidianNotesInitGlobal, ObsidianNotesInitLocal);
-	obsidian_notes_function.named_parameters["title_property"] = LogicalType::VARCHAR;
-	obsidian_notes_function.cardinality = ObsidianNotesCardinality;
-	loader.RegisterFunction(obsidian_notes_function);
+	// Register obsidian_notes table function with two overloads:
+	// obsidian_notes()            — uses current working directory
+	// obsidian_notes(vault_path)  — uses the provided path
+	TableFunctionSet obsidian_notes_set("obsidian_notes");
+
+	TableFunction no_args("obsidian_notes", {}, ObsidianNotesFunction, ObsidianNotesBind, ObsidianNotesInitGlobal,
+	                      ObsidianNotesInitLocal);
+	no_args.named_parameters["title_property"] = LogicalType::VARCHAR;
+	no_args.cardinality = ObsidianNotesCardinality;
+	obsidian_notes_set.AddFunction(no_args);
+
+	TableFunction with_path("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction, ObsidianNotesBind,
+	                        ObsidianNotesInitGlobal, ObsidianNotesInitLocal);
+	with_path.named_parameters["title_property"] = LogicalType::VARCHAR;
+	with_path.cardinality = ObsidianNotesCardinality;
+	obsidian_notes_set.AddFunction(with_path);
+
+	loader.RegisterFunction(obsidian_notes_set);
 }
 
 void ObsidianExtension::Load(ExtensionLoader &loader) {
