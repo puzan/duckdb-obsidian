@@ -8,16 +8,21 @@ This is a DuckDB extension named "obsidian", built from the DuckDB extension tem
 
 ## Build Commands
 
-Requires VCPKG installed. Build environment:
-- `GEN=ninja`
-- `VCPKG_TOOLCHAIN_PATH=/Users/puzan/.vcpkg/scripts/buildsystems/vcpkg.cmake`
+Requires VCPKG installed. All `make` commands **must** be prefixed with these environment variables:
 
 ```bash
-make                  # Build release binary
-make test             # Run all SQL logic tests
-make test_debug       # Run tests against debug build
-make format           # Format code
-make clean            # Clean build artifacts
+export GEN=ninja
+export VCPKG_TOOLCHAIN_PATH=~/.vcpkg/scripts/buildsystems/vcpkg.cmake
+```
+
+**Important:** `make` and `make test` are separate commands — always run `make` first to build, then `make test` to test.
+
+```bash
+GEN=ninja VCPKG_TOOLCHAIN_PATH=~/.vcpkg/scripts/buildsystems/vcpkg.cmake make             # Build release binary
+GEN=ninja VCPKG_TOOLCHAIN_PATH=~/.vcpkg/scripts/buildsystems/vcpkg.cmake make test        # Run all SQL logic tests
+GEN=ninja VCPKG_TOOLCHAIN_PATH=~/.vcpkg/scripts/buildsystems/vcpkg.cmake make test_debug  # Run tests against debug build
+GEN=ninja VCPKG_TOOLCHAIN_PATH=~/.vcpkg/scripts/buildsystems/vcpkg.cmake make format      # Format code
+GEN=ninja VCPKG_TOOLCHAIN_PATH=~/.vcpkg/scripts/buildsystems/vcpkg.cmake make clean       # Clean build artifacts
 ```
 
 **Output binaries:**
@@ -33,8 +38,14 @@ make clean            # Clean build artifacts
 
 ## Architecture
 
-- **`src/obsidian_extension.cpp`** — Extension entry point. Implements the `obsidian_notes` table function and registers it. All new functions go here.
+- **`src/obsidian_extension.cpp`** — Extension entry point. Registers the `obsidian_notes` table function. DuckDB-specific scan logic: bind, init, scan callbacks.
+- **`src/obsidian_frontmatter.cpp`** — YAML frontmatter parsing (`ParseFrontmatter`) and JSON serialization (`FrontmatterToJson`). Owns all ryml dependency.
+- **`src/obsidian_wikilinks.cpp`** — Wiki-link extraction (`ExtractWikiLinks`). Pure C++, no DuckDB or third-party deps.
+- **`src/obsidian_body.cpp`** — Markdown body parsing via cmark-gfm (`ParseBody`). Extracts headings and wiki-links.
 - **`src/include/obsidian_extension.hpp`** — Declares `ObsidianExtension` (inherits `Extension`), exposing `Load()`, `Name()`, `Version()`.
+- **`src/include/obsidian_frontmatter.hpp`** — Declares `ParsedFrontmatter`, `ParseFrontmatter`, `FrontmatterToJson`.
+- **`src/include/obsidian_wikilinks.hpp`** — Declares `InternalLink`, `ExtractWikiLinks`.
+- **`src/include/obsidian_body.hpp`** — Declares `ParsedHeading`, `ParsedBody`, `ParseBody`.
 - **`extension_config.cmake`** — Controls which extensions are loaded and which test directories are included.
 - **`CMakeLists.txt`** — Configures the extension build.
 - **`vcpkg.json`** — Declares VCPKG dependencies. Add new dependencies here.
