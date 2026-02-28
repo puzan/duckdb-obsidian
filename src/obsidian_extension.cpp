@@ -301,7 +301,7 @@ static LogicalType HeadingStructType() {
 	return LogicalType::STRUCT(std::move(fields));
 }
 
-static Value HeadingToValue(const ParsedHeading &heading, const LogicalType &struct_type) {
+static Value HeadingToValue(const ParsedHeading &heading) {
 	child_list_t<Value> fields;
 	fields.emplace_back("level", Value::INTEGER(heading.level));
 	fields.emplace_back("text", Value(heading.text));
@@ -317,7 +317,7 @@ static LogicalType InternalLinkStructType() {
 	return LogicalType::STRUCT(std::move(fields));
 }
 
-static Value InternalLinkToValue(const InternalLink &link, const LogicalType &struct_type) {
+static Value InternalLinkToValue(const InternalLink &link) {
 	child_list_t<Value> fields;
 	fields.emplace_back("target", Value(link.target));
 	fields.emplace_back("display_name",
@@ -494,7 +494,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 					vector<Value> hvs;
 					hvs.reserve(body.headings.size());
 					for (const auto &h : body.headings) {
-						hvs.push_back(HeadingToValue(h, hst));
+						hvs.push_back(HeadingToValue(h));
 					}
 					output.data[col_to_out[COL_HEADERS]].SetValue(count, Value::LIST(hst, std::move(hvs)));
 				}
@@ -505,7 +505,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 					vector<Value> lvs;
 					lvs.reserve(body.links.size());
 					for (const auto &link : body.links) {
-						lvs.push_back(InternalLinkToValue(link, lst));
+						lvs.push_back(InternalLinkToValue(link));
 					}
 					output.data[col_to_out[COL_INTERNAL_LINKS]].SetValue(count, Value::LIST(lst, std::move(lvs)));
 				}
