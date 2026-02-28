@@ -43,7 +43,6 @@ jobs:
         with:
           path: artifacts
           pattern: obsidian-*
-          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
