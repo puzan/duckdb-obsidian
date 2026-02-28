@@ -345,6 +345,8 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	names.emplace_back("relative_path");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("title");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("first_header");
 	return_types.emplace_back(LogicalType::JSON());
 	names.emplace_back("properties");
 	return_types.emplace_back(LogicalType::LIST(result->link_struct_type));
@@ -389,13 +391,15 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	}
 
 	// Write directly to flat vector buffers instead of going through Value boxing.
-	// This avoids heap allocations for every cell in the four VARCHAR columns.
+	// This avoids heap allocations for every cell in the VARCHAR columns.
 	auto filename_data = FlatVector::GetData<string_t>(output.data[0]);
 	auto filepath_data = FlatVector::GetData<string_t>(output.data[1]);
 	auto relpath_data = FlatVector::GetData<string_t>(output.data[2]);
 	auto title_data = FlatVector::GetData<string_t>(output.data[3]);
-	auto props_data = FlatVector::GetData<string_t>(output.data[4]);
-	auto &props_validity = FlatVector::Validity(output.data[4]);
+	auto first_header_data = FlatVector::GetData<string_t>(output.data[4]);
+	auto &first_header_validity = FlatVector::Validity(output.data[4]);
+	auto props_data = FlatVector::GetData<string_t>(output.data[5]);
+	auto &props_validity = FlatVector::Validity(output.data[5]);
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
@@ -432,10 +436,15 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		filepath_data[count] = StringVector::AddString(output.data[1], filepath);
 		relpath_data[count] = StringVector::AddString(output.data[2], relative_path);
 		title_data[count] = StringVector::AddString(output.data[3], title);
+		if (body.h1_heading.empty()) {
+			first_header_validity.SetInvalid(count);
+		} else {
+			first_header_data[count] = StringVector::AddString(output.data[4], body.h1_heading);
+		}
 		if (properties_json.empty()) {
 			props_validity.SetInvalid(count);
 		} else {
-			props_data[count] = StringVector::AddString(output.data[4], properties_json);
+			props_data[count] = StringVector::AddString(output.data[5], properties_json);
 		}
 
 		// Use cached link_struct_type instead of constructing it on every row.
@@ -445,7 +454,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		for (const auto &link : body.links) {
 			link_values.push_back(InternalLinkToValue(link, struct_type));
 		}
-		output.data[5].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
+		output.data[6].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
 		count++;
 	}
 	output.SetCardinality(count);

@@ -35,6 +35,24 @@ SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'n
 ----
 note_f.md	Heading As Title
 
+# first_header: NULL when note has no H1 heading
+query II
+SELECT filename, first_header FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_c.md';
+----
+note_c.md	NULL
+
+# first_header: returns H1 even when frontmatter title takes priority for title column
+query II
+SELECT filename, first_header FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_e.md';
+----
+note_e.md	Another title
+
+# first_header: returns H1 when it is the title source
+query II
+SELECT filename, first_header FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_f.md';
+----
+note_f.md	Heading As Title
+
 # title: H1 used when there is no frontmatter at all
 query II
 SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_a.md';
