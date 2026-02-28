@@ -272,14 +272,18 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		auto p = ComputeNotePathInfo(bind_data.files[i], bind_data.vault_path);
 
 		// Write cheap VARCHAR columns directly — no file I/O needed.
-		if (filename_out)
+		if (filename_out) {
 			filename_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILENAME]], p.filename);
-		if (basename_out)
+		}
+		if (basename_out) {
 			basename_out[count] = StringVector::AddString(output.data[col_to_out[COL_BASENAME]], p.basename);
-		if (filepath_out)
+		}
+		if (filepath_out) {
 			filepath_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILEPATH]], p.filepath);
-		if (relpath_out)
+		}
+		if (relpath_out) {
 			relpath_out[count] = StringVector::AddString(output.data[col_to_out[COL_RELATIVE_PATH]], p.relative_path);
+		}
 
 		// Expensive: file read + frontmatter/body parsing. Skipped entirely when
 		// only path columns (filename, basename, filepath, relative_path) are projected.
