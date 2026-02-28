@@ -11,8 +11,6 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
-#include <ryml/ryml_std.hpp>
-
 #include <algorithm>
 #include <mutex>
 
@@ -317,7 +315,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 			// properties — only serialize YAML to JSON when projected.
 			if (need_emit_json) {
-				string props_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
+				string props_json = FrontmatterToJson(fm);
 				if (props_json.empty()) {
 					FlatVector::Validity(output.data[col_to_out[COL_PROPERTIES]]).SetInvalid(count);
 				} else {

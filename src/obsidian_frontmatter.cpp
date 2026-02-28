@@ -50,4 +50,11 @@ unique_ptr<ParsedFrontmatter> ParseFrontmatter(const string &s) {
 	return result;
 }
 
+string FrontmatterToJson(const unique_ptr<ParsedFrontmatter> &fm) {
+	if (!fm) {
+		return {};
+	}
+	return ryml::emitrs_json<string>(fm->tree);
+}
+
 } // namespace duckdb

@@ -14,4 +14,7 @@ struct ParsedFrontmatter {
 // Parse YAML frontmatter block. Returns nullptr if absent or malformed.
 unique_ptr<ParsedFrontmatter> ParseFrontmatter(const string &s);
 
+// Serialize the parsed frontmatter tree to JSON. Returns empty string if fm is null.
+string FrontmatterToJson(const unique_ptr<ParsedFrontmatter> &fm);
+
 } // namespace duckdb
