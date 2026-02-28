@@ -28,6 +28,18 @@ static void RymlErrorCallback(const char *msg, size_t msg_len, ryml::Location /*
 // obsidian_notes table function
 //===--------------------------------------------------------------------===//
 
+enum ColIdx : idx_t {
+	COL_FILENAME = 0,
+	COL_BASENAME,
+	COL_FILEPATH,
+	COL_RELATIVE_PATH,
+	COL_FIRST_HEADER,
+	COL_HEADERS,
+	COL_PROPERTIES,
+	COL_INTERNAL_LINKS,
+	COL_COUNT,
+};
+
 struct ObsidianNotesScanData : public TableFunctionData {
 	string vault_path;
 	vector<string> files;
@@ -399,14 +411,11 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 	// Build a reverse map: original column index → position in output.data[].
 	// output.data[i] corresponds to original column column_ids[i] (projection pushdown).
-	// Columns: 0=filename, 1=basename, 2=filepath, 3=relative_path,
-	//          4=first_header, 5=headers, 6=properties, 7=internal_links.
-	static constexpr idx_t NUM_COLS = 8;
-	idx_t col_to_out[NUM_COLS];
-	std::fill(col_to_out, col_to_out + NUM_COLS, idx_t(-1));
+	idx_t col_to_out[COL_COUNT];
+	std::fill(col_to_out, col_to_out + COL_COUNT, idx_t(-1));
 	const auto &col_ids = gstate.column_ids;
 	for (idx_t i = 0; i < col_ids.size(); i++) {
-		if (col_ids[i] < NUM_COLS) {
+		if (col_ids[i] < COL_COUNT) {
 			col_to_out[col_ids[i]] = i;
 		}
 	}
@@ -415,19 +424,22 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	// Reading the file is only needed when at least one content column is projected.
 	// Parsing the body (cmark) is only needed for first_header, headers, or internal_links.
 	// Emitting properties JSON is only needed when the properties column is projected.
-	const bool need_file_read = col_to_out[4] != idx_t(-1) || col_to_out[5] != idx_t(-1) ||
-	                            col_to_out[6] != idx_t(-1) || col_to_out[7] != idx_t(-1);
-	const bool need_body      = col_to_out[4] != idx_t(-1) || col_to_out[5] != idx_t(-1) ||
-	                            col_to_out[7] != idx_t(-1);
-	const bool need_emit_json = col_to_out[6] != idx_t(-1);
+	const bool need_file_read = col_to_out[COL_FIRST_HEADER]    != idx_t(-1) ||
+	                            col_to_out[COL_HEADERS]         != idx_t(-1) ||
+	                            col_to_out[COL_PROPERTIES]      != idx_t(-1) ||
+	                            col_to_out[COL_INTERNAL_LINKS]  != idx_t(-1);
+	const bool need_body      = col_to_out[COL_FIRST_HEADER]    != idx_t(-1) ||
+	                            col_to_out[COL_HEADERS]         != idx_t(-1) ||
+	                            col_to_out[COL_INTERNAL_LINKS]  != idx_t(-1);
+	const bool need_emit_json = col_to_out[COL_PROPERTIES]      != idx_t(-1);
 
 	// Pre-fetch output data pointers for cheap VARCHAR columns (nullptr = not projected).
-	auto *filename_out     = col_to_out[0] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[0]]) : nullptr;
-	auto *basename_out     = col_to_out[1] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[1]]) : nullptr;
-	auto *filepath_out     = col_to_out[2] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[2]]) : nullptr;
-	auto *relpath_out      = col_to_out[3] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[3]]) : nullptr;
-	auto *first_header_out = col_to_out[4] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[4]]) : nullptr;
-	auto *props_out        = col_to_out[6] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[6]]) : nullptr;
+	auto *filename_out     = col_to_out[COL_FILENAME]     != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FILENAME]])     : nullptr;
+	auto *basename_out     = col_to_out[COL_BASENAME]     != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_BASENAME]])     : nullptr;
+	auto *filepath_out     = col_to_out[COL_FILEPATH]     != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FILEPATH]])     : nullptr;
+	auto *relpath_out      = col_to_out[COL_RELATIVE_PATH] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_RELATIVE_PATH]]) : nullptr;
+	auto *first_header_out = col_to_out[COL_FIRST_HEADER] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FIRST_HEADER]]) : nullptr;
+	auto *props_out        = col_to_out[COL_PROPERTIES]   != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_PROPERTIES]])   : nullptr;
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
@@ -452,10 +464,10 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		}
 
 		// Write cheap VARCHAR columns directly — no file I/O needed.
-		if (filename_out) filename_out[count] = StringVector::AddString(output.data[col_to_out[0]], filename);
-		if (basename_out) basename_out[count] = StringVector::AddString(output.data[col_to_out[1]], basename);
-		if (filepath_out) filepath_out[count] = StringVector::AddString(output.data[col_to_out[2]], filepath);
-		if (relpath_out)  relpath_out[count]  = StringVector::AddString(output.data[col_to_out[3]], relative_path);
+		if (filename_out) filename_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILENAME]], filename);
+		if (basename_out) basename_out[count] = StringVector::AddString(output.data[col_to_out[COL_BASENAME]], basename);
+		if (filepath_out) filepath_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILEPATH]], filepath);
+		if (relpath_out)  relpath_out[count]  = StringVector::AddString(output.data[col_to_out[COL_RELATIVE_PATH]], relative_path);
 
 		// Expensive: file read + frontmatter/body parsing. Skipped entirely when
 		// only path columns (filename, basename, filepath, relative_path) are projected.
@@ -467,45 +479,45 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 			if (need_body) {
 				auto body = ParseBody(contents, fm);
 
-				// first_header [4]
+				// first_header
 				if (first_header_out) {
 					if (body.h1_heading.empty()) {
-						FlatVector::Validity(output.data[col_to_out[4]]).SetInvalid(count);
+						FlatVector::Validity(output.data[col_to_out[COL_FIRST_HEADER]]).SetInvalid(count);
 					} else {
-						first_header_out[count] = StringVector::AddString(output.data[col_to_out[4]], body.h1_heading);
+						first_header_out[count] = StringVector::AddString(output.data[col_to_out[COL_FIRST_HEADER]], body.h1_heading);
 					}
 				}
 
-				// headers [5]
-				if (col_to_out[5] != idx_t(-1)) {
+				// headers
+				if (col_to_out[COL_HEADERS] != idx_t(-1)) {
 					const LogicalType &hst = bind_data.heading_struct_type;
 					vector<Value> hvs;
 					hvs.reserve(body.headings.size());
 					for (const auto &h : body.headings) {
 						hvs.push_back(HeadingToValue(h, hst));
 					}
-					output.data[col_to_out[5]].SetValue(count, Value::LIST(hst, std::move(hvs)));
+					output.data[col_to_out[COL_HEADERS]].SetValue(count, Value::LIST(hst, std::move(hvs)));
 				}
 
-				// internal_links [7]
-				if (col_to_out[7] != idx_t(-1)) {
+				// internal_links
+				if (col_to_out[COL_INTERNAL_LINKS] != idx_t(-1)) {
 					const LogicalType &lst = bind_data.link_struct_type;
 					vector<Value> lvs;
 					lvs.reserve(body.links.size());
 					for (const auto &link : body.links) {
 						lvs.push_back(InternalLinkToValue(link, lst));
 					}
-					output.data[col_to_out[7]].SetValue(count, Value::LIST(lst, std::move(lvs)));
+					output.data[col_to_out[COL_INTERNAL_LINKS]].SetValue(count, Value::LIST(lst, std::move(lvs)));
 				}
 			}
 
-			// properties [6] — only serialize YAML to JSON when projected.
+			// properties — only serialize YAML to JSON when projected.
 			if (need_emit_json) {
 				string props_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
 				if (props_json.empty()) {
-					FlatVector::Validity(output.data[col_to_out[6]]).SetInvalid(count);
+					FlatVector::Validity(output.data[col_to_out[COL_PROPERTIES]]).SetInvalid(count);
 				} else {
-					props_out[count] = StringVector::AddString(output.data[col_to_out[6]], props_json);
+					props_out[count] = StringVector::AddString(output.data[col_to_out[COL_PROPERTIES]], props_json);
 				}
 			}
 		}
