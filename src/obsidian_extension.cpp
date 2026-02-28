@@ -327,6 +327,35 @@ static Value InternalLinkToValue(const InternalLink &link) {
 	return Value::STRUCT(std::move(fields));
 }
 
+struct NotePathInfo {
+	string filepath;
+	string filename;
+	string basename;
+	string relative_path;
+};
+
+static NotePathInfo ComputeNotePathInfo(const string &raw_path, const string &vault_path) {
+	NotePathInfo info;
+	info.filepath = raw_path;
+	std::replace(info.filepath.begin(), info.filepath.end(), '\\', '/');
+
+	auto sep = info.filepath.find_last_of("/\\");
+	info.filename = (sep == string::npos) ? info.filepath : info.filepath.substr(sep + 1);
+
+	info.basename = info.filename.size() > 3 ? info.filename.substr(0, info.filename.size() - 3) : info.filename;
+
+	info.relative_path = info.filepath;
+	if (info.filepath.size() > vault_path.size() &&
+	    info.filepath.compare(0, vault_path.size(), vault_path) == 0) {
+		info.relative_path = info.filepath.substr(vault_path.size());
+		if (!info.relative_path.empty() &&
+		    (info.relative_path[0] == '/' || info.relative_path[0] == '\\')) {
+			info.relative_path = info.relative_path.substr(1);
+		}
+	}
+	return info;
+}
+
 static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<ObsidianNotesScanData>();
@@ -443,36 +472,18 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
-		string filepath = bind_data.files[i];
-		std::replace(filepath.begin(), filepath.end(), '\\', '/');
-
-		// Extract just the filename from the full path
-		auto sep = filepath.find_last_of("/\\");
-		string filename = (sep == string::npos) ? filepath : filepath.substr(sep + 1);
-
-		// Filename stem (without .md extension)
-		string basename = filename.size() > 3 ? filename.substr(0, filename.size() - 3) : filename;
-
-		// Build relative path from vault root
-		string relative_path = filepath;
-		const string &vault_path = bind_data.vault_path;
-		if (filepath.size() > vault_path.size() && filepath.compare(0, vault_path.size(), vault_path) == 0) {
-			relative_path = filepath.substr(vault_path.size());
-			if (!relative_path.empty() && (relative_path[0] == '/' || relative_path[0] == '\\')) {
-				relative_path = relative_path.substr(1);
-			}
-		}
+		auto p = ComputeNotePathInfo(bind_data.files[i], bind_data.vault_path);
 
 		// Write cheap VARCHAR columns directly — no file I/O needed.
-		if (filename_out) filename_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILENAME]], filename);
-		if (basename_out) basename_out[count] = StringVector::AddString(output.data[col_to_out[COL_BASENAME]], basename);
-		if (filepath_out) filepath_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILEPATH]], filepath);
-		if (relpath_out)  relpath_out[count]  = StringVector::AddString(output.data[col_to_out[COL_RELATIVE_PATH]], relative_path);
+		if (filename_out) filename_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILENAME]], p.filename);
+		if (basename_out) basename_out[count] = StringVector::AddString(output.data[col_to_out[COL_BASENAME]], p.basename);
+		if (filepath_out) filepath_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILEPATH]], p.filepath);
+		if (relpath_out)  relpath_out[count]  = StringVector::AddString(output.data[col_to_out[COL_RELATIVE_PATH]], p.relative_path);
 
 		// Expensive: file read + frontmatter/body parsing. Skipped entirely when
 		// only path columns (filename, basename, filepath, relative_path) are projected.
 		if (need_file_read) {
-			string contents = ReadFileContents(fs, filepath);
+			string contents = ReadFileContents(fs, p.filepath);
 			auto fm = ParseFrontmatter(contents);
 
 			// Body parse (cmark) — skipped when only properties is projected.
