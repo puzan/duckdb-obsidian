@@ -309,6 +309,8 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("filename");
 	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("basename");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("filepath");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("relative_path");
@@ -360,12 +362,13 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	// Write directly to flat vector buffers instead of going through Value boxing.
 	// This avoids heap allocations for every cell in the VARCHAR columns.
 	auto filename_data = FlatVector::GetData<string_t>(output.data[0]);
-	auto filepath_data = FlatVector::GetData<string_t>(output.data[1]);
-	auto relpath_data = FlatVector::GetData<string_t>(output.data[2]);
-	auto first_header_data = FlatVector::GetData<string_t>(output.data[3]);
-	auto &first_header_validity = FlatVector::Validity(output.data[3]);
-	auto props_data = FlatVector::GetData<string_t>(output.data[4]);
-	auto &props_validity = FlatVector::Validity(output.data[4]);
+	auto basename_data = FlatVector::GetData<string_t>(output.data[1]);
+	auto filepath_data = FlatVector::GetData<string_t>(output.data[2]);
+	auto relpath_data = FlatVector::GetData<string_t>(output.data[3]);
+	auto first_header_data = FlatVector::GetData<string_t>(output.data[4]);
+	auto &first_header_validity = FlatVector::Validity(output.data[4]);
+	auto props_data = FlatVector::GetData<string_t>(output.data[5]);
+	auto &props_validity = FlatVector::Validity(output.data[5]);
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
@@ -375,6 +378,9 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		// Extract just the filename from the full path
 		auto sep = filepath.find_last_of("/\\");
 		string filename = (sep == string::npos) ? filepath : filepath.substr(sep + 1);
+
+		// Filename stem (without .md extension)
+		string basename = filename.size() > 3 ? filename.substr(0, filename.size() - 3) : filename;
 
 		// Build relative path from vault root
 		string relative_path = filepath;
@@ -392,17 +398,18 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		string properties_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
 
 		filename_data[count] = StringVector::AddString(output.data[0], filename);
-		filepath_data[count] = StringVector::AddString(output.data[1], filepath);
-		relpath_data[count] = StringVector::AddString(output.data[2], relative_path);
+		basename_data[count] = StringVector::AddString(output.data[1], basename);
+		filepath_data[count] = StringVector::AddString(output.data[2], filepath);
+		relpath_data[count] = StringVector::AddString(output.data[3], relative_path);
 		if (body.h1_heading.empty()) {
 			first_header_validity.SetInvalid(count);
 		} else {
-			first_header_data[count] = StringVector::AddString(output.data[3], body.h1_heading);
+			first_header_data[count] = StringVector::AddString(output.data[4], body.h1_heading);
 		}
 		if (properties_json.empty()) {
 			props_validity.SetInvalid(count);
 		} else {
-			props_data[count] = StringVector::AddString(output.data[4], properties_json);
+			props_data[count] = StringVector::AddString(output.data[5], properties_json);
 		}
 
 		// Use cached link_struct_type instead of constructing it on every row.
@@ -412,7 +419,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		for (const auto &link : body.links) {
 			link_values.push_back(InternalLinkToValue(link, struct_type));
 		}
-		output.data[5].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
+		output.data[6].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
 		count++;
 	}
 	output.SetCardinality(count);

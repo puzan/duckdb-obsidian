@@ -7,21 +7,21 @@ require obsidian
 
 require json
 
-# obsidian_notes returns filename, filepath, relative_path columns
-query III
-SELECT filename, filepath, relative_path FROM obsidian_notes('test/sql/vault') ORDER BY filename;
+# obsidian_notes returns filename, basename, filepath, relative_path columns
+query IIII
+SELECT filename, basename, filepath, relative_path FROM obsidian_notes('test/sql/vault') ORDER BY filename;
 ----
-note_a.md	test/sql/vault/note_a.md	note_a.md
-note_b.md	test/sql/vault/subdir/note_b.md	subdir/note_b.md
-note_c.md	test/sql/vault/note_c.md	note_c.md
-note_d.md	test/sql/vault/note_d.md	note_d.md
-note_e.md	test/sql/vault/note_e.md	note_e.md
-note_f.md	test/sql/vault/note_f.md	note_f.md
-note_g.md	test/sql/vault/note_g.md	note_g.md
-note_h.md	test/sql/vault/note_h.md	note_h.md
-note_i.md	test/sql/vault/note_i.md	note_i.md
-note_j.md	test/sql/vault/note_j.md	note_j.md
-note_k.md	test/sql/vault/note_k.md	note_k.md
+note_a.md	note_a	test/sql/vault/note_a.md	note_a.md
+note_b.md	note_b	test/sql/vault/subdir/note_b.md	subdir/note_b.md
+note_c.md	note_c	test/sql/vault/note_c.md	note_c.md
+note_d.md	note_d	test/sql/vault/note_d.md	note_d.md
+note_e.md	note_e	test/sql/vault/note_e.md	note_e.md
+note_f.md	note_f	test/sql/vault/note_f.md	note_f.md
+note_g.md	note_g	test/sql/vault/note_g.md	note_g.md
+note_h.md	note_h	test/sql/vault/note_h.md	note_h.md
+note_i.md	note_i	test/sql/vault/note_i.md	note_i.md
+note_j.md	note_j	test/sql/vault/note_j.md	note_j.md
+note_k.md	note_k	test/sql/vault/note_k.md	note_k.md
 
 # first_header: NULL when note has no H1 heading
 query II
