@@ -1,6 +1,9 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "obsidian_extension.hpp"
+#include "obsidian_body.hpp"
+#include "obsidian_frontmatter.hpp"
+#include "obsidian_wikilinks.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/vector.hpp"
@@ -8,21 +11,12 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/extension_helper.hpp"
 
-#include <cmark-gfm.h>
-#include <ryml/ryml.hpp>
 #include <ryml/ryml_std.hpp>
 
 #include <algorithm>
-#include <stdexcept>
 #include <mutex>
 
 namespace duckdb {
-
-// ryml calls this instead of abort() when it encounters a parse error.
-// We throw so that our try/catch can handle malformed YAML gracefully.
-static void RymlErrorCallback(const char *msg, size_t msg_len, ryml::Location /*loc*/, void * /*userdata*/) {
-	throw std::runtime_error(std::string(msg, msg_len));
-}
 
 //===--------------------------------------------------------------------===//
 // obsidian_notes table function
@@ -92,207 +86,6 @@ static string ReadFileContents(FileSystem &fs, const string &path) {
 	return contents;
 }
 
-struct ParsedFrontmatter {
-	string yaml_block; // owns the buffer that ryml::Tree points into
-	ryml::Tree tree;
-	size_t body_offset = 0; // byte offset in the original file where body starts
-};
-
-// Parse YAML frontmatter block. Returns nullptr if absent or malformed.
-static unique_ptr<ParsedFrontmatter> ParseFrontmatter(const string &s) {
-	if (s.size() < 3 || s.compare(0, 3, "---") != 0) {
-		return nullptr;
-	}
-	size_t end = s.find("\n---", 3);
-	if (end == string::npos) {
-		return nullptr;
-	}
-
-	auto result = make_uniq<ParsedFrontmatter>();
-	result->yaml_block = s.substr(3, end - 3);
-	if (!result->yaml_block.empty() && result->yaml_block[0] == '\n') {
-		result->yaml_block = result->yaml_block.substr(1);
-	}
-
-	// body starts after the closing "---\n"
-	result->body_offset = end + 4;
-	if (result->body_offset < s.size() && s[result->body_offset] == '\n') {
-		result->body_offset++;
-	}
-
-	try {
-		ryml::Callbacks callbacks = ryml::get_callbacks();
-		callbacks.m_error = RymlErrorCallback;
-		result->tree = ryml::Tree(callbacks);
-		ryml::EventHandlerTree evth(callbacks);
-		ryml::Parser parser(&evth);
-		ryml::parse_in_place(&parser, ryml::to_substr(result->yaml_block), &result->tree);
-
-		if (!result->tree.rootref().is_map()) {
-			return nullptr;
-		}
-	} catch (...) {
-		return nullptr;
-	}
-
-	return result;
-}
-
-struct InternalLink {
-	string target;
-	string display_name; // empty = absent
-	string header;       // empty = absent
-	string block_ref;    // empty = absent
-};
-
-// Extract [[wiki-links]] from a plain text string and append to links vector.
-// Hand-rolled parser — avoids std::regex heap allocations on every NFA step.
-static void ExtractWikiLinks(const string &text, vector<InternalLink> &links) {
-	const char *s = text.c_str();
-	const size_t len = text.size();
-	size_t i = 0;
-
-	while (i + 1 < len) {
-		// Scan for '[['
-		if (s[i] != '[' || s[i + 1] != '[') {
-			i++;
-			continue;
-		}
-
-		// Find matching ']]', reject nested brackets
-		size_t start = i + 2;
-		size_t j = start;
-		bool found = false;
-		while (j + 1 < len) {
-			if (s[j] == ']' && s[j + 1] == ']') {
-				found = true;
-				break;
-			}
-			if (s[j] == '[' || s[j] == ']') {
-				break;
-			}
-			j++;
-		}
-
-		if (!found || j == start) {
-			i = j + 1;
-			continue;
-		}
-
-		// inner = s[start..j)
-		const char *inner = s + start;
-		size_t inner_len = j - start;
-
-		InternalLink link;
-
-		// Split on '|' → display_name
-		const char *pipe = static_cast<const char *>(memchr(inner, '|', inner_len));
-		const char *target_start;
-		size_t target_len;
-		if (pipe) {
-			link.display_name.assign(pipe + 1, inner + inner_len - (pipe + 1));
-			target_start = inner;
-			target_len = pipe - inner;
-		} else {
-			target_start = inner;
-			target_len = inner_len;
-		}
-
-		// Split target on '#' → header / block_ref
-		const char *hash = static_cast<const char *>(memchr(target_start, '#', target_len));
-		if (hash) {
-			link.target.assign(target_start, hash - target_start);
-			const char *anchor = hash + 1;
-			size_t anchor_len = target_start + target_len - anchor;
-			if (anchor_len > 0 && anchor[0] == '^') {
-				link.block_ref.assign(anchor + 1, anchor_len - 1);
-			} else {
-				link.header.assign(anchor, anchor_len);
-			}
-		} else {
-			link.target.assign(target_start, target_len);
-		}
-
-		links.push_back(std::move(link));
-		i = j + 2;
-	}
-}
-
-struct ParsedHeading {
-	int level;
-	string text;
-};
-
-struct ParsedBody {
-	string h1_heading;
-	vector<ParsedHeading> headings;
-	vector<InternalLink> links;
-};
-
-// Parse the document body once via cmark-gfm AST, extracting:
-// - all headings (level + text)
-// - first H1 heading text (for the first_header column)
-// - all [[wiki-links]] from TEXT nodes (skipping code blocks)
-// Also extracts wiki-links from frontmatter yaml_block if present.
-static ParsedBody ParseBody(const string &contents, const unique_ptr<ParsedFrontmatter> &fm) {
-	ParsedBody result;
-
-	// 1. Frontmatter: extract wiki-links from raw yaml block
-	if (fm) {
-		ExtractWikiLinks(fm->yaml_block, result.links);
-	}
-
-	// 2. Body: skip frontmatter so cmark doesn't re-parse it as text
-	const char *body_start = contents.c_str();
-	size_t body_size = contents.size();
-	if (fm) {
-		body_start = contents.c_str() + fm->body_offset;
-		body_size = contents.size() - fm->body_offset;
-	}
-
-	cmark_node *doc = cmark_parse_document(body_start, body_size, CMARK_OPT_DEFAULT);
-	if (!doc) {
-		return result;
-	}
-
-	cmark_iter *iter = cmark_iter_new(doc);
-	cmark_event_type ev;
-	int current_heading_level = 0;
-	string current_heading_text;
-
-	while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
-		cmark_node *node = cmark_iter_get_node(iter);
-		cmark_node_type type = cmark_node_get_type(node);
-
-		if (type == CMARK_NODE_HEADING) {
-			if (ev == CMARK_EVENT_ENTER) {
-				current_heading_level = cmark_node_get_heading_level(node);
-				current_heading_text.clear();
-			} else if (ev == CMARK_EVENT_EXIT) {
-				if (!current_heading_text.empty()) {
-					result.headings.push_back({current_heading_level, current_heading_text});
-					if (current_heading_level == 1 && result.h1_heading.empty()) {
-						result.h1_heading = current_heading_text;
-					}
-				}
-				current_heading_level = 0;
-				current_heading_text.clear();
-			}
-		} else if (ev == CMARK_EVENT_ENTER && type == CMARK_NODE_TEXT) {
-			const char *lit = cmark_node_get_literal(node);
-			if (lit) {
-				ExtractWikiLinks(string(lit), result.links);
-				if (current_heading_level > 0) {
-					current_heading_text += lit;
-				}
-			}
-		}
-	}
-	cmark_iter_free(iter);
-	cmark_node_free(doc);
-
-	return result;
-}
 
 static LogicalType HeadingStructType() {
 	child_list_t<LogicalType> fields;

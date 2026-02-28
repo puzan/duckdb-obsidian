@@ -11,7 +11,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 project(${TARGET_NAME})
 include_directories(src/include)
 
-set(EXTENSION_SOURCES src/obsidian_extension.cpp)
+set(EXTENSION_SOURCES
+    src/obsidian_extension.cpp
+    src/obsidian_frontmatter.cpp
+    src/obsidian_wikilinks.cpp
+    src/obsidian_body.cpp
+)
 
 find_package(cmark-gfm CONFIG REQUIRED)
 find_package(ryml CONFIG REQUIRED)
