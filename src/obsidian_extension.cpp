@@ -191,7 +191,7 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	return_types.emplace_back(LogicalType::LIST(result->link_struct_type));
 	names.emplace_back("internal_links");
 
-	return std::move(result);
+	return result;
 }
 
 static unique_ptr<GlobalTableFunctionState> ObsidianNotesInitGlobal(ClientContext &context,
@@ -337,6 +337,11 @@ static unique_ptr<NodeStatistics> ObsidianNotesCardinality(ClientContext &contex
 	return make_uniq<NodeStatistics>(n, n);
 }
 
+static void ConfigureObsidianNotesFunction(TableFunction &fn) {
+	fn.projection_pushdown = true;
+	fn.cardinality = ObsidianNotesCardinality;
+}
+
 static void LoadInternal(ExtensionLoader &loader) {
 	ExtensionHelper::TryAutoLoadExtension(loader.GetDatabaseInstance(), "json");
 
@@ -347,14 +352,12 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	TableFunction no_args("obsidian_notes", {}, ObsidianNotesFunction, ObsidianNotesBind, ObsidianNotesInitGlobal,
 	                      ObsidianNotesInitLocal);
-	no_args.projection_pushdown = true;
-	no_args.cardinality = ObsidianNotesCardinality;
+	ConfigureObsidianNotesFunction(no_args);
 	obsidian_notes_set.AddFunction(no_args);
 
 	TableFunction with_path("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction, ObsidianNotesBind,
 	                        ObsidianNotesInitGlobal, ObsidianNotesInitLocal);
-	with_path.projection_pushdown = true;
-	with_path.cardinality = ObsidianNotesCardinality;
+	ConfigureObsidianNotesFunction(with_path);
 	obsidian_notes_set.AddFunction(with_path);
 
 	loader.RegisterFunction(obsidian_notes_set);
