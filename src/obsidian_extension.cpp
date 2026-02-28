@@ -40,6 +40,9 @@ struct ObsidianNotesScanState : public GlobalTableFunctionState {
 	std::mutex lock;
 	idx_t position = 0;
 	idx_t max_threads;
+	// Projected column ids supplied by DuckDB when projection_pushdown = true.
+	// output.data[i] corresponds to the original column column_ids[i].
+	vector<column_t> column_ids;
 
 	explicit ObsidianNotesScanState(idx_t max_threads_p) : max_threads(max_threads_p) {
 	}
@@ -362,7 +365,9 @@ static unique_ptr<GlobalTableFunctionState> ObsidianNotesInitGlobal(ClientContex
 	auto &bind_data = input.bind_data->Cast<ObsidianNotesScanData>();
 	// Allow one thread per file; DuckDB caps this at the actual thread-pool size.
 	idx_t max_threads = bind_data.files.empty() ? 1 : bind_data.files.size();
-	return make_uniq<ObsidianNotesScanState>(max_threads);
+	auto state = make_uniq<ObsidianNotesScanState>(max_threads);
+	state->column_ids = input.column_ids;
+	return state;
 }
 
 static unique_ptr<LocalTableFunctionState> ObsidianNotesInitLocal(ExecutionContext &context,
@@ -392,16 +397,37 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		return;
 	}
 
-	// Write directly to flat vector buffers instead of going through Value boxing.
-	// This avoids heap allocations for every cell in the VARCHAR columns.
-	auto filename_data = FlatVector::GetData<string_t>(output.data[0]);
-	auto basename_data = FlatVector::GetData<string_t>(output.data[1]);
-	auto filepath_data = FlatVector::GetData<string_t>(output.data[2]);
-	auto relpath_data = FlatVector::GetData<string_t>(output.data[3]);
-	auto first_header_data = FlatVector::GetData<string_t>(output.data[4]);
-	auto &first_header_validity = FlatVector::Validity(output.data[4]);
-	auto props_data = FlatVector::GetData<string_t>(output.data[6]);
-	auto &props_validity = FlatVector::Validity(output.data[6]);
+	// Build a reverse map: original column index → position in output.data[].
+	// output.data[i] corresponds to original column column_ids[i] (projection pushdown).
+	// Columns: 0=filename, 1=basename, 2=filepath, 3=relative_path,
+	//          4=first_header, 5=headers, 6=properties, 7=internal_links.
+	static constexpr idx_t NUM_COLS = 8;
+	idx_t col_to_out[NUM_COLS];
+	std::fill(col_to_out, col_to_out + NUM_COLS, idx_t(-1));
+	const auto &col_ids = gstate.column_ids;
+	for (idx_t i = 0; i < col_ids.size(); i++) {
+		if (col_ids[i] < NUM_COLS) {
+			col_to_out[col_ids[i]] = i;
+		}
+	}
+
+	// Determine which expensive operations are required based on projected columns.
+	// Reading the file is only needed when at least one content column is projected.
+	// Parsing the body (cmark) is only needed for first_header, headers, or internal_links.
+	// Emitting properties JSON is only needed when the properties column is projected.
+	const bool need_file_read = col_to_out[4] != idx_t(-1) || col_to_out[5] != idx_t(-1) ||
+	                            col_to_out[6] != idx_t(-1) || col_to_out[7] != idx_t(-1);
+	const bool need_body      = col_to_out[4] != idx_t(-1) || col_to_out[5] != idx_t(-1) ||
+	                            col_to_out[7] != idx_t(-1);
+	const bool need_emit_json = col_to_out[6] != idx_t(-1);
+
+	// Pre-fetch output data pointers for cheap VARCHAR columns (nullptr = not projected).
+	auto *filename_out     = col_to_out[0] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[0]]) : nullptr;
+	auto *basename_out     = col_to_out[1] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[1]]) : nullptr;
+	auto *filepath_out     = col_to_out[2] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[2]]) : nullptr;
+	auto *relpath_out      = col_to_out[3] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[3]]) : nullptr;
+	auto *first_header_out = col_to_out[4] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[4]]) : nullptr;
+	auto *props_out        = col_to_out[6] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[6]]) : nullptr;
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
@@ -425,42 +451,65 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 			}
 		}
 
-		string contents = ReadFileContents(fs, filepath);
-		auto fm = ParseFrontmatter(contents);
-		auto body = ParseBody(contents, fm);
-		string properties_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
+		// Write cheap VARCHAR columns directly — no file I/O needed.
+		if (filename_out) filename_out[count] = StringVector::AddString(output.data[col_to_out[0]], filename);
+		if (basename_out) basename_out[count] = StringVector::AddString(output.data[col_to_out[1]], basename);
+		if (filepath_out) filepath_out[count] = StringVector::AddString(output.data[col_to_out[2]], filepath);
+		if (relpath_out)  relpath_out[count]  = StringVector::AddString(output.data[col_to_out[3]], relative_path);
 
-		filename_data[count] = StringVector::AddString(output.data[0], filename);
-		basename_data[count] = StringVector::AddString(output.data[1], basename);
-		filepath_data[count] = StringVector::AddString(output.data[2], filepath);
-		relpath_data[count] = StringVector::AddString(output.data[3], relative_path);
-		if (body.h1_heading.empty()) {
-			first_header_validity.SetInvalid(count);
-		} else {
-			first_header_data[count] = StringVector::AddString(output.data[4], body.h1_heading);
-		}
-		// Use cached struct types instead of constructing them on every row.
-		const LogicalType &heading_struct_type = bind_data.heading_struct_type;
-		vector<Value> heading_values;
-		heading_values.reserve(body.headings.size());
-		for (const auto &h : body.headings) {
-			heading_values.push_back(HeadingToValue(h, heading_struct_type));
-		}
-		output.data[5].SetValue(count, Value::LIST(heading_struct_type, std::move(heading_values)));
+		// Expensive: file read + frontmatter/body parsing. Skipped entirely when
+		// only path columns (filename, basename, filepath, relative_path) are projected.
+		if (need_file_read) {
+			string contents = ReadFileContents(fs, filepath);
+			auto fm = ParseFrontmatter(contents);
 
-		if (properties_json.empty()) {
-			props_validity.SetInvalid(count);
-		} else {
-			props_data[count] = StringVector::AddString(output.data[6], properties_json);
+			// Body parse (cmark) — skipped when only properties is projected.
+			if (need_body) {
+				auto body = ParseBody(contents, fm);
+
+				// first_header [4]
+				if (first_header_out) {
+					if (body.h1_heading.empty()) {
+						FlatVector::Validity(output.data[col_to_out[4]]).SetInvalid(count);
+					} else {
+						first_header_out[count] = StringVector::AddString(output.data[col_to_out[4]], body.h1_heading);
+					}
+				}
+
+				// headers [5]
+				if (col_to_out[5] != idx_t(-1)) {
+					const LogicalType &hst = bind_data.heading_struct_type;
+					vector<Value> hvs;
+					hvs.reserve(body.headings.size());
+					for (const auto &h : body.headings) {
+						hvs.push_back(HeadingToValue(h, hst));
+					}
+					output.data[col_to_out[5]].SetValue(count, Value::LIST(hst, std::move(hvs)));
+				}
+
+				// internal_links [7]
+				if (col_to_out[7] != idx_t(-1)) {
+					const LogicalType &lst = bind_data.link_struct_type;
+					vector<Value> lvs;
+					lvs.reserve(body.links.size());
+					for (const auto &link : body.links) {
+						lvs.push_back(InternalLinkToValue(link, lst));
+					}
+					output.data[col_to_out[7]].SetValue(count, Value::LIST(lst, std::move(lvs)));
+				}
+			}
+
+			// properties [6] — only serialize YAML to JSON when projected.
+			if (need_emit_json) {
+				string props_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
+				if (props_json.empty()) {
+					FlatVector::Validity(output.data[col_to_out[6]]).SetInvalid(count);
+				} else {
+					props_out[count] = StringVector::AddString(output.data[col_to_out[6]], props_json);
+				}
+			}
 		}
 
-		const LogicalType &link_struct_type = bind_data.link_struct_type;
-		vector<Value> link_values;
-		link_values.reserve(body.links.size());
-		for (const auto &link : body.links) {
-			link_values.push_back(InternalLinkToValue(link, link_struct_type));
-		}
-		output.data[7].SetValue(count, Value::LIST(link_struct_type, std::move(link_values)));
 		count++;
 	}
 	output.SetCardinality(count);
@@ -482,11 +531,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	TableFunction no_args("obsidian_notes", {}, ObsidianNotesFunction, ObsidianNotesBind, ObsidianNotesInitGlobal,
 	                      ObsidianNotesInitLocal);
+	no_args.projection_pushdown = true;
 	no_args.cardinality = ObsidianNotesCardinality;
 	obsidian_notes_set.AddFunction(no_args);
 
 	TableFunction with_path("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction, ObsidianNotesBind,
 	                        ObsidianNotesInitGlobal, ObsidianNotesInitLocal);
+	with_path.projection_pushdown = true;
 	with_path.cardinality = ObsidianNotesCardinality;
 	obsidian_notes_set.AddFunction(with_path);
 
