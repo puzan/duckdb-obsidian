@@ -89,6 +89,23 @@ SELECT filename FROM obsidian_notes('test/sql/vault') WHERE list_contains(list_t
 ----
 note_k.md
 
+# title: can be computed in SQL as frontmatter title > first H1 > basename
+query II
+SELECT filename, COALESCE(json_extract_string(properties, '$.title'), first_header, basename) AS title
+FROM obsidian_notes('test/sql/vault') ORDER BY filename;
+----
+note_a.md	Note A
+note_b.md	Note B
+note_c.md	Title From Frontmatter
+note_d.md	note_d
+note_e.md	Title From Frontmatter
+note_f.md	Heading As Title
+note_g.md	Quoted Title
+note_h.md	Title From Heading
+note_i.md	Note With Multiple Tags
+note_j.md	Default Title
+note_k.md	Note With Links
+
 # obsidian_notes errors on a directory without .obsidian
 statement error
 SELECT * FROM obsidian_notes('test/sql/not_a_vault');
