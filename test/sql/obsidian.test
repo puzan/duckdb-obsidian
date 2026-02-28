@@ -7,33 +7,21 @@ require obsidian
 
 require json
 
-# obsidian_notes returns filename, filepath, relative_path and title columns
-query IIII
-SELECT filename, filepath, relative_path, title FROM obsidian_notes('test/sql/vault') ORDER BY filename;
+# obsidian_notes returns filename, filepath, relative_path columns
+query III
+SELECT filename, filepath, relative_path FROM obsidian_notes('test/sql/vault') ORDER BY filename;
 ----
-note_a.md	test/sql/vault/note_a.md	note_a.md	Note A
-note_b.md	test/sql/vault/subdir/note_b.md	subdir/note_b.md	Note B
-note_c.md	test/sql/vault/note_c.md	note_c.md	Title From Frontmatter
-note_d.md	test/sql/vault/note_d.md	note_d.md	note_d
-note_e.md	test/sql/vault/note_e.md	note_e.md	Title From Frontmatter
-note_f.md	test/sql/vault/note_f.md	note_f.md	Heading As Title
-note_g.md	test/sql/vault/note_g.md	note_g.md	Quoted Title
-note_h.md	test/sql/vault/note_h.md	note_h.md	Title From Heading
-note_i.md	test/sql/vault/note_i.md	note_i.md	Note With Multiple Tags
-note_j.md	test/sql/vault/note_j.md	note_j.md	Default Title
-note_k.md	test/sql/vault/note_k.md	note_k.md	Note With Links
-
-# title: frontmatter takes priority over H1 heading
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_e.md';
-----
-note_e.md	Title From Frontmatter
-
-# title: H1 heading used when frontmatter has no title property
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_f.md';
-----
-note_f.md	Heading As Title
+note_a.md	test/sql/vault/note_a.md	note_a.md
+note_b.md	test/sql/vault/subdir/note_b.md	subdir/note_b.md
+note_c.md	test/sql/vault/note_c.md	note_c.md
+note_d.md	test/sql/vault/note_d.md	note_d.md
+note_e.md	test/sql/vault/note_e.md	note_e.md
+note_f.md	test/sql/vault/note_f.md	note_f.md
+note_g.md	test/sql/vault/note_g.md	note_g.md
+note_h.md	test/sql/vault/note_h.md	note_h.md
+note_i.md	test/sql/vault/note_i.md	note_i.md
+note_j.md	test/sql/vault/note_j.md	note_j.md
+note_k.md	test/sql/vault/note_k.md	note_k.md
 
 # first_header: NULL when note has no H1 heading
 query II
@@ -41,41 +29,17 @@ SELECT filename, first_header FROM obsidian_notes('test/sql/vault') WHERE filena
 ----
 note_c.md	NULL
 
-# first_header: returns H1 even when frontmatter title takes priority for title column
+# first_header: returns H1 even when frontmatter title is present
 query II
 SELECT filename, first_header FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_e.md';
 ----
 note_e.md	Another title
 
-# first_header: returns H1 when it is the title source
+# first_header: returns H1 heading
 query II
 SELECT filename, first_header FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_f.md';
 ----
 note_f.md	Heading As Title
-
-# title: H1 used when there is no frontmatter at all
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_a.md';
-----
-note_a.md	Note A
-
-# title: quoted string value in frontmatter (ryml >> operator abort regression)
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_g.md';
-----
-note_g.md	Quoted Title
-
-# title: malformed YAML frontmatter (container as key) falls back to H1 (ryml abort regression)
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_h.md';
-----
-note_h.md	Title From Heading
-
-# title: filename stem used when no frontmatter and no heading (double-free regression)
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_d.md';
-----
-note_d.md	note_d
 
 # properties: NULL when no frontmatter
 query II
@@ -96,22 +60,10 @@ SELECT filename, json_extract_string(properties, '$.title') FROM obsidian_notes(
 note_c.md	Title From Frontmatter
 
 # properties: filter by tag presence using json_contains
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE json_contains(properties->'$.tags', '"projects"') ORDER BY filename;
+query I
+SELECT filename FROM obsidian_notes('test/sql/vault') WHERE json_contains(properties->'$.tags', '"projects"') ORDER BY filename;
 ----
-note_i.md	Note With Multiple Tags
-
-# title_property: custom frontmatter property used as title source
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault', title_property='name') WHERE filename = 'note_j.md';
-----
-note_j.md	Custom Property Title
-
-# title_property: default is 'title' when parameter is omitted
-query II
-SELECT filename, title FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_j.md';
-----
-note_j.md	Default Title
+note_i.md
 
 # internal_links: empty list when note has no wiki-links
 query II

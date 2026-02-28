@@ -30,7 +30,6 @@ static void RymlErrorCallback(const char *msg, size_t msg_len, ryml::Location /*
 
 struct ObsidianNotesScanData : public TableFunctionData {
 	string vault_path;
-	string title_property;
 	vector<string> files;
 	// Cached once at bind time; avoids re-constructing the LogicalType per row.
 	LogicalType link_struct_type;
@@ -283,30 +282,6 @@ static Value InternalLinkToValue(const InternalLink &link, const LogicalType &st
 	return Value::STRUCT(std::move(fields));
 }
 
-// Resolve title: frontmatter <title_property> > first H1 heading > filename stem.
-static string ResolveTitle(const string &filename_stem, const unique_ptr<ParsedFrontmatter> &fm,
-                           const string &title_property, const string &h1_heading) {
-	if (fm) {
-		ryml::ConstNodeRef root = fm->tree.rootref();
-		ryml::csubstr prop_key = ryml::to_csubstr(title_property);
-		if (root.has_child(prop_key)) {
-			auto title_node = root[prop_key];
-			if (title_node.has_val()) {
-				ryml::csubstr val = title_node.val();
-				if (!val.empty()) {
-					return string(val.str, val.len);
-				}
-			}
-		}
-	}
-
-	if (!h1_heading.empty()) {
-		return h1_heading;
-	}
-
-	return filename_stem;
-}
-
 static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableFunctionBindInput &input,
                                                   vector<LogicalType> &return_types, vector<string> &names) {
 	auto result = make_uniq<ObsidianNotesScanData>();
@@ -316,12 +291,6 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 		result->vault_path = input.inputs[0].GetValue<string>();
 	} else {
 		result->vault_path = fs.GetWorkingDirectory();
-	}
-
-	result->title_property = "title";
-	auto it = input.named_parameters.find("title_property");
-	if (it != input.named_parameters.end() && !it->second.IsNull()) {
-		result->title_property = it->second.GetValue<string>();
 	}
 
 	if (!fs.DirectoryExists(result->vault_path)) {
@@ -343,8 +312,6 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	names.emplace_back("filepath");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("relative_path");
-	return_types.emplace_back(LogicalType::VARCHAR);
-	names.emplace_back("title");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("first_header");
 	return_types.emplace_back(LogicalType::JSON());
@@ -395,11 +362,10 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	auto filename_data = FlatVector::GetData<string_t>(output.data[0]);
 	auto filepath_data = FlatVector::GetData<string_t>(output.data[1]);
 	auto relpath_data = FlatVector::GetData<string_t>(output.data[2]);
-	auto title_data = FlatVector::GetData<string_t>(output.data[3]);
-	auto first_header_data = FlatVector::GetData<string_t>(output.data[4]);
-	auto &first_header_validity = FlatVector::Validity(output.data[4]);
-	auto props_data = FlatVector::GetData<string_t>(output.data[5]);
-	auto &props_validity = FlatVector::Validity(output.data[5]);
+	auto first_header_data = FlatVector::GetData<string_t>(output.data[3]);
+	auto &first_header_validity = FlatVector::Validity(output.data[3]);
+	auto props_data = FlatVector::GetData<string_t>(output.data[4]);
+	auto &props_validity = FlatVector::Validity(output.data[4]);
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
@@ -409,12 +375,6 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		// Extract just the filename from the full path
 		auto sep = filepath.find_last_of("/\\");
 		string filename = (sep == string::npos) ? filepath : filepath.substr(sep + 1);
-
-		// Filename stem (without .md)
-		string stem = filename;
-		if (stem.size() > 3) {
-			stem = stem.substr(0, stem.size() - 3);
-		}
 
 		// Build relative path from vault root
 		string relative_path = filepath;
@@ -429,22 +389,20 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		string contents = ReadFileContents(fs, filepath);
 		auto fm = ParseFrontmatter(contents);
 		auto body = ParseBody(contents, fm);
-		string title = ResolveTitle(stem, fm, bind_data.title_property, body.h1_heading);
 		string properties_json = fm ? ryml::emitrs_json<string>(fm->tree) : string();
 
 		filename_data[count] = StringVector::AddString(output.data[0], filename);
 		filepath_data[count] = StringVector::AddString(output.data[1], filepath);
 		relpath_data[count] = StringVector::AddString(output.data[2], relative_path);
-		title_data[count] = StringVector::AddString(output.data[3], title);
 		if (body.h1_heading.empty()) {
 			first_header_validity.SetInvalid(count);
 		} else {
-			first_header_data[count] = StringVector::AddString(output.data[4], body.h1_heading);
+			first_header_data[count] = StringVector::AddString(output.data[3], body.h1_heading);
 		}
 		if (properties_json.empty()) {
 			props_validity.SetInvalid(count);
 		} else {
-			props_data[count] = StringVector::AddString(output.data[5], properties_json);
+			props_data[count] = StringVector::AddString(output.data[4], properties_json);
 		}
 
 		// Use cached link_struct_type instead of constructing it on every row.
@@ -454,7 +412,7 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		for (const auto &link : body.links) {
 			link_values.push_back(InternalLinkToValue(link, struct_type));
 		}
-		output.data[6].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
+		output.data[5].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
 		count++;
 	}
 	output.SetCardinality(count);
@@ -476,13 +434,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	TableFunction no_args("obsidian_notes", {}, ObsidianNotesFunction, ObsidianNotesBind, ObsidianNotesInitGlobal,
 	                      ObsidianNotesInitLocal);
-	no_args.named_parameters["title_property"] = LogicalType::VARCHAR;
 	no_args.cardinality = ObsidianNotesCardinality;
 	obsidian_notes_set.AddFunction(no_args);
 
 	TableFunction with_path("obsidian_notes", {LogicalType::VARCHAR}, ObsidianNotesFunction, ObsidianNotesBind,
 	                        ObsidianNotesInitGlobal, ObsidianNotesInitLocal);
-	with_path.named_parameters["title_property"] = LogicalType::VARCHAR;
 	with_path.cardinality = ObsidianNotesCardinality;
 	obsidian_notes_set.AddFunction(with_path);
 
