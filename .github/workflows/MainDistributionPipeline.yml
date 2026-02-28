@@ -29,3 +29,24 @@ jobs:
       ci_tools_version: v1.4.4
       extension_name: obsidian
       format_checks: "format"
+
+  release:
+    name: Create GitHub Release
+    needs: [duckdb-stable-build, code-quality-check]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all extension artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: obsidian-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
