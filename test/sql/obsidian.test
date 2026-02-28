@@ -22,6 +22,7 @@ note_h.md	note_h	test/sql/vault/note_h.md	note_h.md
 note_i.md	note_i	test/sql/vault/note_i.md	note_i.md
 note_j.md	note_j	test/sql/vault/note_j.md	note_j.md
 note_k.md	note_k	test/sql/vault/note_k.md	note_k.md
+note_l.md	note_l	test/sql/vault/note_l.md	note_l.md
 
 # first_header: NULL when note has no H1 heading
 query II
@@ -40,6 +41,31 @@ query II
 SELECT filename, first_header FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_f.md';
 ----
 note_f.md	Heading As Title
+
+# headers: empty list when note has no headings
+query II
+SELECT filename, headers FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_d.md';
+----
+note_d.md	[]
+
+# headers: single H1 heading
+query II
+SELECT filename, headers FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_a.md';
+----
+note_a.md	[{'level': 1, 'text': Note A}]
+
+# headers: multiple heading levels in document order
+query II
+SELECT filename, headers FROM obsidian_notes('test/sql/vault') WHERE filename = 'note_l.md';
+----
+note_l.md	[{'level': 1, 'text': Heading One}, {'level': 2, 'text': Heading Two}, {'level': 3, 'text': Heading Three}, {'level': 2, 'text': Another H2}]
+
+# headers: filter notes that have an H2 heading
+query I
+SELECT filename FROM obsidian_notes('test/sql/vault') WHERE list_contains(list_transform(headers, h -> h.level), 2) ORDER BY filename;
+----
+note_h.md
+note_l.md
 
 # properties: NULL when no frontmatter
 query II
@@ -105,6 +131,7 @@ note_h.md	Title From Heading
 note_i.md	Note With Multiple Tags
 note_j.md	Default Title
 note_k.md	Note With Links
+note_l.md	Heading One
 
 # obsidian_notes errors on a directory without .obsidian
 statement error

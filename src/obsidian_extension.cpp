@@ -32,6 +32,7 @@ struct ObsidianNotesScanData : public TableFunctionData {
 	string vault_path;
 	vector<string> files;
 	// Cached once at bind time; avoids re-constructing the LogicalType per row.
+	LogicalType heading_struct_type;
 	LogicalType link_struct_type;
 };
 
@@ -202,19 +203,26 @@ static void ExtractWikiLinks(const string &text, vector<InternalLink> &links) {
 	}
 }
 
+struct ParsedHeading {
+	int level;
+	string text;
+};
+
 struct ParsedBody {
 	string h1_heading;
+	vector<ParsedHeading> headings;
 	vector<InternalLink> links;
 };
 
 // Parse the document body once via cmark-gfm AST, extracting:
-// - first H1 heading text
+// - all headings (level + text)
+// - first H1 heading text (for the first_header column)
 // - all [[wiki-links]] from TEXT nodes (skipping code blocks)
 // Also extracts wiki-links from frontmatter yaml_block if present.
 static ParsedBody ParseBody(const string &contents, const unique_ptr<ParsedFrontmatter> &fm) {
 	ParsedBody result;
 
-	// 1. Frontmatter: regex over raw yaml block
+	// 1. Frontmatter: extract wiki-links from raw yaml block
 	if (fm) {
 		ExtractWikiLinks(fm->yaml_block, result.links);
 	}
@@ -234,25 +242,33 @@ static ParsedBody ParseBody(const string &contents, const unique_ptr<ParsedFront
 
 	cmark_iter *iter = cmark_iter_new(doc);
 	cmark_event_type ev;
+	int current_heading_level = 0;
+	string current_heading_text;
+
 	while ((ev = cmark_iter_next(iter)) != CMARK_EVENT_DONE) {
-		if (ev != CMARK_EVENT_ENTER) {
-			continue;
-		}
 		cmark_node *node = cmark_iter_get_node(iter);
 		cmark_node_type type = cmark_node_get_type(node);
 
-		if (type == CMARK_NODE_TEXT) {
+		if (type == CMARK_NODE_HEADING) {
+			if (ev == CMARK_EVENT_ENTER) {
+				current_heading_level = cmark_node_get_heading_level(node);
+				current_heading_text.clear();
+			} else if (ev == CMARK_EVENT_EXIT) {
+				if (!current_heading_text.empty()) {
+					result.headings.push_back({current_heading_level, current_heading_text});
+					if (current_heading_level == 1 && result.h1_heading.empty()) {
+						result.h1_heading = current_heading_text;
+					}
+				}
+				current_heading_level = 0;
+				current_heading_text.clear();
+			}
+		} else if (ev == CMARK_EVENT_ENTER && type == CMARK_NODE_TEXT) {
 			const char *lit = cmark_node_get_literal(node);
 			if (lit) {
 				ExtractWikiLinks(string(lit), result.links);
-
-				// Collect H1 heading text (first one only)
-				if (result.h1_heading.empty()) {
-					cmark_node *parent = cmark_node_parent(node);
-					if (parent && cmark_node_get_type(parent) == CMARK_NODE_HEADING &&
-					    cmark_node_get_heading_level(parent) == 1) {
-						result.h1_heading += lit;
-					}
+				if (current_heading_level > 0) {
+					current_heading_text += lit;
 				}
 			}
 		}
@@ -261,6 +277,20 @@ static ParsedBody ParseBody(const string &contents, const unique_ptr<ParsedFront
 	cmark_node_free(doc);
 
 	return result;
+}
+
+static LogicalType HeadingStructType() {
+	child_list_t<LogicalType> fields;
+	fields.emplace_back("level", LogicalType::INTEGER);
+	fields.emplace_back("text", LogicalType::VARCHAR);
+	return LogicalType::STRUCT(std::move(fields));
+}
+
+static Value HeadingToValue(const ParsedHeading &heading, const LogicalType &struct_type) {
+	child_list_t<Value> fields;
+	fields.emplace_back("level", Value::INTEGER(heading.level));
+	fields.emplace_back("text", Value(heading.text));
+	return Value::STRUCT(std::move(fields));
 }
 
 static LogicalType InternalLinkStructType() {
@@ -304,6 +334,7 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 
 	CollectMarkdownFiles(fs, result->vault_path, result->files);
 
+	result->heading_struct_type = HeadingStructType();
 	result->link_struct_type = InternalLinkStructType();
 
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -316,6 +347,8 @@ static unique_ptr<FunctionData> ObsidianNotesBind(ClientContext &context, TableF
 	names.emplace_back("relative_path");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("first_header");
+	return_types.emplace_back(LogicalType::LIST(result->heading_struct_type));
+	names.emplace_back("headers");
 	return_types.emplace_back(LogicalType::JSON());
 	names.emplace_back("properties");
 	return_types.emplace_back(LogicalType::LIST(result->link_struct_type));
@@ -367,8 +400,8 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	auto relpath_data = FlatVector::GetData<string_t>(output.data[3]);
 	auto first_header_data = FlatVector::GetData<string_t>(output.data[4]);
 	auto &first_header_validity = FlatVector::Validity(output.data[4]);
-	auto props_data = FlatVector::GetData<string_t>(output.data[5]);
-	auto &props_validity = FlatVector::Validity(output.data[5]);
+	auto props_data = FlatVector::GetData<string_t>(output.data[6]);
+	auto &props_validity = FlatVector::Validity(output.data[6]);
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
@@ -406,20 +439,28 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 		} else {
 			first_header_data[count] = StringVector::AddString(output.data[4], body.h1_heading);
 		}
+		// Use cached struct types instead of constructing them on every row.
+		const LogicalType &heading_struct_type = bind_data.heading_struct_type;
+		vector<Value> heading_values;
+		heading_values.reserve(body.headings.size());
+		for (const auto &h : body.headings) {
+			heading_values.push_back(HeadingToValue(h, heading_struct_type));
+		}
+		output.data[5].SetValue(count, Value::LIST(heading_struct_type, std::move(heading_values)));
+
 		if (properties_json.empty()) {
 			props_validity.SetInvalid(count);
 		} else {
-			props_data[count] = StringVector::AddString(output.data[5], properties_json);
+			props_data[count] = StringVector::AddString(output.data[6], properties_json);
 		}
 
-		// Use cached link_struct_type instead of constructing it on every row.
-		const LogicalType &struct_type = bind_data.link_struct_type;
+		const LogicalType &link_struct_type = bind_data.link_struct_type;
 		vector<Value> link_values;
 		link_values.reserve(body.links.size());
 		for (const auto &link : body.links) {
-			link_values.push_back(InternalLinkToValue(link, struct_type));
+			link_values.push_back(InternalLinkToValue(link, link_struct_type));
 		}
-		output.data[6].SetValue(count, Value::LIST(struct_type, std::move(link_values)));
+		output.data[7].SetValue(count, Value::LIST(link_struct_type, std::move(link_values)));
 		count++;
 	}
 	output.SetCardinality(count);
