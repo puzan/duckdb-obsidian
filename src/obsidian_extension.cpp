@@ -84,7 +84,6 @@ static string ReadFileContents(FileSystem &fs, const string &path) {
 	return contents;
 }
 
-
 static LogicalType HeadingStructType() {
 	child_list_t<LogicalType> fields;
 	fields.emplace_back("level", LogicalType::INTEGER);
@@ -136,11 +135,9 @@ static NotePathInfo ComputeNotePathInfo(const string &raw_path, const string &va
 	info.basename = info.filename.size() > 3 ? info.filename.substr(0, info.filename.size() - 3) : info.filename;
 
 	info.relative_path = info.filepath;
-	if (info.filepath.size() > vault_path.size() &&
-	    info.filepath.compare(0, vault_path.size(), vault_path) == 0) {
+	if (info.filepath.size() > vault_path.size() && info.filepath.compare(0, vault_path.size(), vault_path) == 0) {
 		info.relative_path = info.filepath.substr(vault_path.size());
-		if (!info.relative_path.empty() &&
-		    (info.relative_path[0] == '/' || info.relative_path[0] == '\\')) {
+		if (!info.relative_path.empty() && (info.relative_path[0] == '/' || info.relative_path[0] == '\\')) {
 			info.relative_path = info.relative_path.substr(1);
 		}
 	}
@@ -244,32 +241,45 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 	// Reading the file is only needed when at least one content column is projected.
 	// Parsing the body (cmark) is only needed for first_header, headers, or internal_links.
 	// Emitting properties JSON is only needed when the properties column is projected.
-	const bool need_file_read = col_to_out[COL_FIRST_HEADER]    != idx_t(-1) ||
-	                            col_to_out[COL_HEADERS]         != idx_t(-1) ||
-	                            col_to_out[COL_PROPERTIES]      != idx_t(-1) ||
-	                            col_to_out[COL_INTERNAL_LINKS]  != idx_t(-1);
-	const bool need_body      = col_to_out[COL_FIRST_HEADER]    != idx_t(-1) ||
-	                            col_to_out[COL_HEADERS]         != idx_t(-1) ||
-	                            col_to_out[COL_INTERNAL_LINKS]  != idx_t(-1);
-	const bool need_emit_json = col_to_out[COL_PROPERTIES]      != idx_t(-1);
+	const bool need_file_read = col_to_out[COL_FIRST_HEADER] != idx_t(-1) || col_to_out[COL_HEADERS] != idx_t(-1) ||
+	                            col_to_out[COL_PROPERTIES] != idx_t(-1) || col_to_out[COL_INTERNAL_LINKS] != idx_t(-1);
+	const bool need_body = col_to_out[COL_FIRST_HEADER] != idx_t(-1) || col_to_out[COL_HEADERS] != idx_t(-1) ||
+	                       col_to_out[COL_INTERNAL_LINKS] != idx_t(-1);
+	const bool need_emit_json = col_to_out[COL_PROPERTIES] != idx_t(-1);
 
 	// Pre-fetch output data pointers for cheap VARCHAR columns (nullptr = not projected).
-	auto *filename_out     = col_to_out[COL_FILENAME]     != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FILENAME]])     : nullptr;
-	auto *basename_out     = col_to_out[COL_BASENAME]     != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_BASENAME]])     : nullptr;
-	auto *filepath_out     = col_to_out[COL_FILEPATH]     != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FILEPATH]])     : nullptr;
-	auto *relpath_out      = col_to_out[COL_RELATIVE_PATH] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_RELATIVE_PATH]]) : nullptr;
-	auto *first_header_out = col_to_out[COL_FIRST_HEADER] != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FIRST_HEADER]]) : nullptr;
-	auto *props_out        = col_to_out[COL_PROPERTIES]   != idx_t(-1) ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_PROPERTIES]])   : nullptr;
+	auto *filename_out = col_to_out[COL_FILENAME] != idx_t(-1)
+	                         ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FILENAME]])
+	                         : nullptr;
+	auto *basename_out = col_to_out[COL_BASENAME] != idx_t(-1)
+	                         ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_BASENAME]])
+	                         : nullptr;
+	auto *filepath_out = col_to_out[COL_FILEPATH] != idx_t(-1)
+	                         ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FILEPATH]])
+	                         : nullptr;
+	auto *relpath_out = col_to_out[COL_RELATIVE_PATH] != idx_t(-1)
+	                        ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_RELATIVE_PATH]])
+	                        : nullptr;
+	auto *first_header_out = col_to_out[COL_FIRST_HEADER] != idx_t(-1)
+	                             ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_FIRST_HEADER]])
+	                             : nullptr;
+	auto *props_out = col_to_out[COL_PROPERTIES] != idx_t(-1)
+	                      ? FlatVector::GetData<string_t>(output.data[col_to_out[COL_PROPERTIES]])
+	                      : nullptr;
 
 	idx_t count = 0;
 	for (idx_t i = batch_start; i < batch_end; i++) {
 		auto p = ComputeNotePathInfo(bind_data.files[i], bind_data.vault_path);
 
 		// Write cheap VARCHAR columns directly — no file I/O needed.
-		if (filename_out) filename_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILENAME]], p.filename);
-		if (basename_out) basename_out[count] = StringVector::AddString(output.data[col_to_out[COL_BASENAME]], p.basename);
-		if (filepath_out) filepath_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILEPATH]], p.filepath);
-		if (relpath_out)  relpath_out[count]  = StringVector::AddString(output.data[col_to_out[COL_RELATIVE_PATH]], p.relative_path);
+		if (filename_out)
+			filename_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILENAME]], p.filename);
+		if (basename_out)
+			basename_out[count] = StringVector::AddString(output.data[col_to_out[COL_BASENAME]], p.basename);
+		if (filepath_out)
+			filepath_out[count] = StringVector::AddString(output.data[col_to_out[COL_FILEPATH]], p.filepath);
+		if (relpath_out)
+			relpath_out[count] = StringVector::AddString(output.data[col_to_out[COL_RELATIVE_PATH]], p.relative_path);
 
 		// Expensive: file read + frontmatter/body parsing. Skipped entirely when
 		// only path columns (filename, basename, filepath, relative_path) are projected.
@@ -286,7 +296,8 @@ static void ObsidianNotesFunction(ClientContext &context, TableFunctionInput &da
 					if (body.h1_heading.empty()) {
 						FlatVector::Validity(output.data[col_to_out[COL_FIRST_HEADER]]).SetInvalid(count);
 					} else {
-						first_header_out[count] = StringVector::AddString(output.data[col_to_out[COL_FIRST_HEADER]], body.h1_heading);
+						first_header_out[count] =
+						    StringVector::AddString(output.data[col_to_out[COL_FIRST_HEADER]], body.h1_heading);
 					}
 				}
 
