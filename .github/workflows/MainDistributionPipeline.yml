@@ -44,8 +44,19 @@ jobs:
           path: artifacts
           pattern: obsidian-*
 
+      - name: Package artifacts
+        run: |
+          mkdir release-files
+          for dir in artifacts/obsidian-*/; do
+            name=$(basename "$dir")
+            (cd "$dir" && zip -r "../../release-files/${name}.zip" .)
+          done
+
+      - name: List artifacts
+        run: find artifacts release-files -print
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: release-files/*
           generate_release_notes: true
